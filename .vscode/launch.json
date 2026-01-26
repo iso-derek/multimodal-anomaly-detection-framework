@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run anomaly router",
+      "type": "python",
+      "request": "launch",
+      "module": "src.anomaly_router",
+      "cwd": "${workspaceFolder}/Multimodial Anomaly Detection System",
+      "console": "integratedTerminal"
+    }
+  ]
+}
