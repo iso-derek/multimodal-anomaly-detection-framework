@@ -4,10 +4,10 @@
 A modular anomaly detection framework supporting multiple data modalities.
 
 ## Current Status
-- Tabular anomaly detection: ✅ working
-- Time-series anomaly detection: ✅ working
-- Image anomaly detection: ✅ working
-- Video anomaly detection: ⏳ planned (next)
+- Tabular anomaly detection:  working
+- Time-series anomaly detection:  working
+- Image anomaly detection:  working
+- Video anomaly detection:  planned (next)
 
 ## How to run
 ### Install dependencies
