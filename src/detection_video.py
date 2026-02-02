@@ -168,7 +168,11 @@ def run_ucsd_split(
         raise FileNotFoundError(f"Could not find split folder: {base}")
 
     # Each clip is usually a folder like Train001, Test001, ...
-    clip_dirs = sorted([p for p in base.iterdir() if p.is_dir()])
+    clip_dirs = sorted([
+    p for p in base.iterdir()
+    if p.is_dir() and not p.name.lower().endswith("_gt")
+])
+
     if not clip_dirs:
         raise RuntimeError(f"No clip folders found inside: {base}")
 
@@ -202,6 +206,16 @@ def run_ucsd_split(
 
     return results
 
+def detect_video_anomalies_ucsd(
+    ucsd_root: str | Path,
+    dataset: str = "UCSDped1",
+    split: str = "Test",
+    out_dir: str | Path = "outputs/video_ucsd",
+):
+    """
+    Project-friendly wrapper: runs UCSD video baseline and returns structured results.
+    """
+    return run_ucsd_split(ucsd_root=ucsd_root, dataset=dataset, split=split, out_dir=out_dir)
 
 
 # Quick CLI usage
