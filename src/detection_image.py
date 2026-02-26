@@ -1,36 +1,55 @@
 import numpy as np
+from src.common.normalise import normalise_percentile
 
-
-def detect_image_anomaly(model, image, threshold: float = None):
+def detect_image_for_fusion(model, image, threshold: float = 0.65, calib: dict | None = None) -> dict:
     """
-    If model is provided (e.g., autoencoder), compute reconstruction error.
-    Otherwise uses a simple heuristic score (variance / mean intensity).
+    If model is provided (autoencoder), uses reconstruction MSE.
+    Else uses std heuristic.
 
-    image can be:
-    - numpy array (H,W) grayscale
-    - numpy array (H,W,3) colour
+    Returns fused-ready dict.
     """
     img = np.asarray(image).astype(np.float32)
 
-    # Normalize to [0,1] if looks like 0..255
     if img.max() > 1.5:
         img = img / 255.0
 
-    # If colour, keep as colour; if grayscale, ensure (H,W,1) if needed by model
     if model is not None:
         x = img
         if x.ndim == 2:
-            x = x[..., None]  # (H,W,1)
-        x = x[None, ...]     # batch dimension (1,H,W,C)
+            x = x[..., None]
+        x = x[None, ...]  # (1,H,W,C)
 
         recon = model.predict(x, verbose=0)
-        err = float(np.mean((x - recon) ** 2))
-        is_anomaly = bool(err > (threshold if threshold is not None else err))
-        return {"score": err, "is_anomaly": is_anomaly, "method": "reconstruction_error"}
+        score_raw = float(np.mean((x - recon) ** 2))
 
-    # No model fallback heuristic
-    score = float(img.std())
-    if threshold is None:
-        threshold = 0.25  # simple default; tune later
+        if calib and "p10" in calib and "p90" in calib:
+            score_norm = normalise_percentile(score_raw, float(calib["p10"]), float(calib["p90"]))
+        else:
+            score_norm = float(np.clip(score_raw, 0.0, 1.0))
 
-    return {"score": score, "is_anomaly": bool(score > threshold), "method": "std_heuristic"}
+        label = 1 if score_norm >= threshold else 0
+        return {
+            "modality": "image",
+            "score_raw": score_raw,
+            "score_norm": score_norm,
+            "label": label,
+            "method": "reconstruction_error",
+            "meta": {"shape": tuple(img.shape), "threshold": threshold, "calib_used": bool(calib is not None)},
+        }
+
+    # fallback heuristic
+    score_raw = float(img.std())
+    if calib and "p10" in calib and "p90" in calib:
+        score_norm = normalise_percentile(score_raw, float(calib["p10"]), float(calib["p90"]))
+    else:
+        score_norm = float(np.clip(score_raw, 0.0, 1.0))
+
+    label = 1 if score_norm >= threshold else 0
+    return {
+        "modality": "image",
+        "score_raw": score_raw,
+        "score_norm": score_norm,
+        "label": label,
+        "method": "std_heuristic",
+        "meta": {"shape": tuple(img.shape), "threshold": threshold, "calib_used": bool(calib is not None)},
+    }

@@ -3,29 +3,27 @@ Video (UCSD) anomaly detection — baseline.
 Works on UCSDped1 / UCSDped2 frame folders (tif/png).
 Produces an anomaly score per frame using simple frame-difference motion energy.
 
-This is intentionally lightweight and defensible for an FYP:
-- fast to run
-- no GPU required
-- easy to explain + extend later (optical flow / autoencoders)
+Fusion summary (Option A):
+- Use p95 of per-frame scores as the clip-level score (robust spike capture).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List
 
 import numpy as np
-
-# Optional deps (only needed for reading images)
 import cv2
 import tifffile as tiff
+from PIL import Image  # FIX: required for TIFF fallback
+
+from src.common.normalise import normalise_percentile
 
 
 # ----------------------------
 # Utilities
 # ----------------------------
-
 def _read_gray(img_path: Path) -> np.ndarray:
     """Read an image into a float32 grayscale array. Robust to broken TIFFs."""
     suf = img_path.suffix.lower()
@@ -41,35 +39,30 @@ def _read_gray(img_path: Path) -> np.ndarray:
         except Exception:
             pass
 
-        # 2) Pillow fallback (often succeeds where tifffile/opencv fail)
+        # 2) Pillow fallback
         try:
             with Image.open(img_path) as im:
-                im = im.convert("L")  # grayscale
+                im = im.convert("L")
                 return np.array(im, dtype=np.float32)
         except Exception:
             pass
 
-    # 3) Final fallback: OpenCV (for png/jpg etc)
+    # 3) Final fallback: OpenCV
     img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise RuntimeError(f"Could not read image: {img_path}")
     return img.astype(np.float32)
 
 
-
-
 def _list_frames(frames_dir: Path) -> List[Path]:
-    """List frame files inside a sequence folder."""
     exts = ("*.tif", "*.tiff", "*.png", "*.jpg", "*.jpeg", "*.bmp")
     frames: List[Path] = []
     for e in exts:
         frames.extend(frames_dir.glob(e))
-    frames = sorted(frames)
-    return frames
+    return sorted(frames)
 
 
 def _normalize_01(x: np.ndarray) -> np.ndarray:
-    """Normalize an array to [0,1]."""
     x = x.astype(np.float32)
     mn = float(np.min(x))
     mx = float(np.max(x))
@@ -81,10 +74,9 @@ def _normalize_01(x: np.ndarray) -> np.ndarray:
 # ----------------------------
 def frame_difference_scores(sequence_dir: Path) -> np.ndarray:
     """
-    Compute anomaly scores for one UCSD clip folder (e.g., Train001/Test001).
-    Score at time t is mean absolute difference between frame(t) and frame(t-1).
+    Score at time t = mean abs diff between frame(t) and frame(t-1).
     Returns length (num_frames - 1) normalized to [0,1].
-    Skips corrupted / unreadable frames safely.
+    Skips unreadable frames safely.
     """
     frames = _list_frames(sequence_dir)
     if len(frames) < 2:
@@ -114,7 +106,6 @@ def frame_difference_scores(sequence_dir: Path) -> np.ndarray:
             print(f"[WARN] Skipping unreadable frame: {f.name} ({e})")
             continue
 
-        # Safety: enforce same size
         if cur.shape != prev.shape:
             cur = cv2.resize(cur, (prev.shape[1], prev.shape[0]))
 
@@ -123,20 +114,51 @@ def frame_difference_scores(sequence_dir: Path) -> np.ndarray:
         prev = cur
 
     if len(scores) < 1:
-        raise ValueError(
-            f"Not enough readable frames in {sequence_dir} (skipped {bad})"
-        )
+        raise ValueError(f"Not enough readable frames in {sequence_dir} (skipped {bad})")
 
-    scores_arr = np.asarray(scores, dtype=np.float32)
-    return _normalize_01(scores_arr)
-
-
+    return _normalize_01(np.asarray(scores, dtype=np.float32))
 
 
 # ----------------------------
-# Runner over dataset
+# Fusion-ready single clip summary (Option A = p95)
 # ----------------------------
+def detect_video_clip_for_fusion(
+    clip_dir: str | Path,
+    threshold: float = 0.65,
+    calib: dict | None = None,
+) -> dict:
+    """
+    Clip -> fused-ready dict using p95 of per-frame motion scores.
+    """
+    clip_dir = Path(clip_dir)
+    scores = frame_difference_scores(clip_dir)  # already [0,1]
+    score_raw = float(np.percentile(scores, 95))  # ✅ Option A
 
+    if calib and "p10" in calib and "p90" in calib:
+        score_norm = normalise_percentile(score_raw, float(calib["p10"]), float(calib["p90"]))
+    else:
+        score_norm = float(np.clip(score_raw, 0.0, 1.0))
+
+    label = 1 if score_norm >= threshold else 0
+
+    return {
+        "modality": "video",
+        "score_raw": score_raw,
+        "score_norm": score_norm,
+        "label": label,
+        "method": "frame_diff_p95",
+        "meta": {
+            "clip_dir": str(clip_dir),
+            "n_scores": int(len(scores)),
+            "threshold": threshold,
+            "calib_used": bool(calib is not None),
+        },
+    }
+
+
+# ----------------------------
+# Dataset runner (kept for experiments)
+# ----------------------------
 @dataclass
 class UcsdRunResult:
     dataset: str
@@ -153,12 +175,11 @@ def run_ucsd_split(
     out_dir: str | Path = "outputs/video_ucsd",
 ) -> List[UcsdRunResult]:
     """
-    Run the baseline detector over all clips in UCSD dataset split.
-    Saves one CSV per clip with per-frame anomaly scores.
-
-    ucsd_root should be the folder that contains UCSDped1 and UCSDped2.
-    Example: Path("data/ucsd") if you have data/ucsd/UCSDped1/...
+    Runs baseline detector over all clips in UCSD split.
+    Saves CSV per clip with per-frame anomaly scores.
     """
+    import pandas as pd
+
     ucsd_root = Path(ucsd_root)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -167,76 +188,22 @@ def run_ucsd_split(
     if not base.exists():
         raise FileNotFoundError(f"Could not find split folder: {base}")
 
-    # Each clip is usually a folder like Train001, Test001, ...
-    clip_dirs = sorted([
-    p for p in base.iterdir()
-    if p.is_dir() and not p.name.lower().endswith("_gt")
-])
-
+    clip_dirs = sorted([p for p in base.iterdir() if p.is_dir() and not p.name.lower().endswith("_gt")])
     if not clip_dirs:
         raise RuntimeError(f"No clip folders found inside: {base}")
 
     results: List[UcsdRunResult] = []
     for clip_dir in clip_dirs:
         scores = frame_difference_scores(clip_dir)
-
-        # frames count = scores+1 because difference uses pairs
         n_frames = len(scores) + 1
 
-        # Save CSV
         csv_path = out_dir / f"{dataset}_{split}_{clip_dir.name}_scores.csv"
-        # Columns: frame_index (starting at 1), score
-        # frame_index 1 corresponds to diff between frame0 and frame1
-        import pandas as pd
         df = pd.DataFrame({
             "frame_index": np.arange(1, len(scores) + 1, dtype=int),
             "score": scores
         })
         df.to_csv(csv_path, index=False)
 
-        results.append(
-            UcsdRunResult(
-                dataset=dataset,
-                split=split,
-                clip=clip_dir.name,
-                n_frames=n_frames,
-                scores_path=str(csv_path),
-            )
-        )
+        results.append(UcsdRunResult(dataset=dataset, split=split, clip=clip_dir.name, n_frames=n_frames, scores_path=str(csv_path)))
 
     return results
-
-def detect_video_anomalies_ucsd(
-    ucsd_root: str | Path,
-    dataset: str = "UCSDped1",
-    split: str = "Test",
-    out_dir: str | Path = "outputs/video_ucsd",
-):
-    """
-    Project-friendly wrapper: runs UCSD video baseline and returns structured results.
-    """
-    return run_ucsd_split(ucsd_root=ucsd_root, dataset=dataset, split=split, out_dir=out_dir)
-
-
-# Quick CLI usage
-# ----------------------------
-
-if __name__ == "__main__":
-    """
-    Example (run from project root):
-    python -m src.detection_video
-
-    Make sure your dataset lives at:
-    data/ucsd/UCSDped1/Train, data/ucsd/UCSDped1/Test, etc.
-    """
-    # Adjust if your folder differs:
-    ucsd_root = Path("data/ucsd/UCSD_Anomaly_Dataset.v1p2")
-
-
-    print("Running UCSDped1 Test split baseline...")
-    results = run_ucsd_split(ucsd_root=ucsd_root, dataset="UCSDped1", split="Test")
-
-    print(f"Done. Wrote {len(results)} clip CSVs to outputs/video_ucsd/")
-    print("First 3 results:")
-    for r in results[:3]:
-        print(r)

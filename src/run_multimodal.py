@@ -27,12 +27,12 @@ def main():
     timeseries_data = [0, 0, 0.1, 0.2, 3.5, 0.1, 0.0]
 
     # -----------------------
-    # Image example (FIXED)
+    # Image example
     # -----------------------
     image_path = Path("images/normal_arm.jpg")  # change if needed
 
     img = imread(str(image_path))
-    if img.ndim == 3:          # RGB -> grayscale
+    if img.ndim == 3:  # RGB -> grayscale
         img = rgb2gray(img)
 
     img = img.astype(np.float32)
@@ -66,13 +66,13 @@ def main():
     ]
 
     # -----------------------
-    # Fuse
+    # Fuse (UPDATED WEIGHTS)
     # -----------------------
     weights = {
-        "tabular": 1.0,
+        "video": 2.0,
+        "tabular": 1.5,
         "timeseries": 1.0,
-        "image": 1.0,
-        "video": 1.0,
+        "image": 0.8,
     }
 
     fused = fuse_weighted_average(summaries, weights=weights)
@@ -80,6 +80,7 @@ def main():
     print("\n=== Multimodal Fusion Result ===")
     print("Final score:", fused["final_score"])
     print("Final label:", "ANOMALY" if fused["final_label"] == -1 else "NORMAL")
+    print("Reason:", fused.get("reason", ""))
     print("\nBy modality:")
     for m in fused["by_modality"]:
         print(

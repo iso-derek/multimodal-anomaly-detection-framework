@@ -135,9 +135,7 @@ def summarize_video(results: List[Any], score_mode: str = "p95") -> ModalitySumm
         if "score" not in df.columns:
             continue
         scores = _to_float_array(df["score"].to_numpy())
-        clip_scores.append(
-            robust_scalar_from_scores(scores, mode=score_mode)
-        )
+        clip_scores.append(robust_scalar_from_scores(scores, mode=score_mode))
 
     if not clip_scores:
         return ModalitySummary(
@@ -167,35 +165,67 @@ def summarize_video(results: List[Any], score_mode: str = "p95") -> ModalitySumm
 
 def fuse_weighted_average(
     summaries: List[ModalitySummary],
-    weights: Optional[Dict[str, float]] = None
+    weights: Optional[Dict[str, float]] = None,
+    strong_threshold: float = 0.8,
+    avg_threshold: float = 0.6,
 ) -> Dict[str, Any]:
+    """
+    Weighted average fusion over modality scores in [0,1].
 
+    Decision rule:
+      - If any modality score >= strong_threshold => ANOMALY
+      - Else if weighted average >= avg_threshold => ANOMALY
+      - Else NORMAL
+
+    Returns:
+      final_score, final_label, reason, by_modality
+    """
     if not summaries:
-        return {"final_score": 0.0, "final_label": 1, "by_modality": []}
+        return {
+            "final_score": 0.0,
+            "final_label": 1,
+            "reason": "no modalities",
+            "by_modality": []
+        }
 
     if weights is None:
         weights = {}
 
-    ws = []
-    xs = []
+    ws: List[float] = []
+    xs: List[float] = []
+    names: List[str] = []
 
     for s in summaries:
+        names.append(s.modality)
         ws.append(float(weights.get(s.modality, 1.0)))
         xs.append(float(s.score))
 
     ws_arr = np.asarray(ws, dtype=np.float32)
     xs_arr = np.asarray(xs, dtype=np.float32)
 
-    denom = ws_arr.sum() if ws_arr.sum() > 1e-8 else 1.0
+    denom = float(ws_arr.sum()) if float(ws_arr.sum()) > 1e-8 else 1.0
     final_score = float((ws_arr * xs_arr).sum() / denom)
 
-    # Strong-modality rule
-    strong_anomaly = bool((xs_arr >= 0.8).any())
-    final_label = -1 if (strong_anomaly or final_score >= 0.6) else 1
+    # Strong-modality rule (explainable)
+    strong_idxs = np.where(xs_arr >= strong_threshold)[0]
+    if strong_idxs.size > 0:
+        best_i = int(strong_idxs[np.argmax(xs_arr[strong_idxs])])
+        best_name = names[best_i]
+        best_score = float(xs_arr[best_i])
+        final_label = -1
+        reason = f"strong modality '{best_name}' score={best_score:.4f} >= {strong_threshold}"
+    else:
+        if final_score >= avg_threshold:
+            final_label = -1
+            reason = f"weighted average score={final_score:.4f} >= {avg_threshold}"
+        else:
+            final_label = 1
+            reason = f"no strong modality and weighted average score={final_score:.4f} < {avg_threshold}"
 
     return {
         "final_score": final_score,
         "final_label": final_label,
+        "reason": reason,
         "by_modality": [
             {
                 "modality": s.modality,
