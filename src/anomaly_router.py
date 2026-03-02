@@ -2,7 +2,7 @@ import numpy as np
 
 from src.detection_tabular import detect_tabular_anomalies
 from src.detection_timeseries import detect_timeseries_anomalies
-from src.detection_image import detect_image_anomaly
+from src.detection_image import detect_image_for_fusion
 from src.detection_video import run_ucsd_split
 
 
@@ -28,7 +28,7 @@ def detect_anomaly(data, data_type: str, model=None):
         return detect_timeseries_anomalies(np.array(data))
 
     if data_type == "image":
-        return detect_image_anomaly(model, data)
+        return detect_image_for_fusion(model=model, image=data)
 
     if data_type == "video":
         # Accept either:
