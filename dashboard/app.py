@@ -125,7 +125,8 @@ video_compare_threshold = st.sidebar.slider(
 single_video_threshold = st.sidebar.slider(
     "Single Video Decision Threshold", 0.0, 1.0, 0.90, 0.01
 )
-
+st.sidebar.success("Loaded autoencoder: autoencoder.keras")
+st.sidebar.success("Loaded calibration: autoencoder_calibration.json")
 
 # Helpers
 def parse_numeric_tabular_text(text: str) -> np.ndarray:
