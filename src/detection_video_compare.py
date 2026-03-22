@@ -7,11 +7,12 @@ import numpy as np
 from src.detection_video import detect_video_clip_for_fusion
 
 
-def extract_video_features(clip_path: str | Path) -> np.ndarray:
+def extract_video_features(clip_path: str | Path) -> tuple[np.ndarray, dict]:
     """
     Build a lightweight feature vector for one video clip.
 
     Uses the existing video detector result and creates a compact summary.
+    Returns both the feature vector and the original detector result.
     """
     result = detect_video_clip_for_fusion(clip_path, threshold=0.90)
 
@@ -19,14 +20,24 @@ def extract_video_features(clip_path: str | Path) -> np.ndarray:
     norm = float(result.get("score_norm", 0.0))
     label = float(result.get("label", 0))
 
-    # Compact summary vector
+    meta = result.get("meta", {}) or {}
+
+    # Optional metadata fields if available from the detector
+    n_frames = float(meta.get("n_frames", 0.0))
+    p95_motion = float(meta.get("p95_motion", raw))
+    mean_motion = float(meta.get("mean_motion", 0.0))
+
+    # Compact but slightly richer summary vector
     feats = np.array([
         raw,
         norm,
         label,
+        n_frames,
+        p95_motion,
+        mean_motion,
     ], dtype=np.float32)
 
-    return feats
+    return feats, result
 
 
 def _normalise_distances(distances: np.ndarray) -> np.ndarray:
@@ -51,6 +62,13 @@ def compare_video_set(
 ) -> dict:
     """
     Compare multiple video clips against each other using distance from group centroid.
+
+    Returns:
+    - per-video centroid distances
+    - normalized comparison scores
+    - labels
+    - ranked results
+    - original detector summaries
     """
     if not clip_paths:
         raise ValueError("No video clips were provided for comparison.")
@@ -61,7 +79,10 @@ def compare_video_set(
     if len(names) != len(clip_paths):
         raise ValueError("names and clip_paths must have the same length.")
 
-    feature_matrix = np.vstack([extract_video_features(p) for p in clip_paths])
+    features_and_results = [extract_video_features(p) for p in clip_paths]
+    feature_matrix = np.vstack([fr[0] for fr in features_and_results])
+    detector_results = [fr[1] for fr in features_and_results]
+
     centroid = np.mean(feature_matrix, axis=0)
 
     distances = np.linalg.norm(feature_matrix - centroid, axis=1)
@@ -70,6 +91,9 @@ def compare_video_set(
 
     items = []
     for i, name in enumerate(names):
+        detector_result = detector_results[i]
+        detector_meta = detector_result.get("meta", {}) or {}
+
         items.append({
             "name": name,
             "clip_path": str(clip_paths[i]),
@@ -77,6 +101,12 @@ def compare_video_set(
             "score_norm": float(score_norm[i]),
             "label": int(labels[i]),
             "features": feature_matrix[i].tolist(),
+            "detector_score_raw": float(detector_result.get("score_raw", 0.0)),
+            "detector_score_norm": float(detector_result.get("score_norm", 0.0)),
+            "detector_label": int(detector_result.get("label", 0)),
+            "n_frames": detector_meta.get("n_frames"),
+            "p95_motion": detector_meta.get("p95_motion"),
+            "mean_motion": detector_meta.get("mean_motion"),
         })
 
     items_sorted = sorted(items, key=lambda x: x["score_raw"], reverse=True)

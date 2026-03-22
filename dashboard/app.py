@@ -636,13 +636,13 @@ if st.button("Run Multimodal Detection", type="primary"):
         # Image comparison results
         if image_compare_out is not None:
             st.subheader("7. Image Comparison Results")
-            st.write("Images are compared using feature distance from the group centroid.")
+            st.write("Images are ranked using centroid distance from the group centre, with SSIM shown as supporting similarity evidence.")
             st.dataframe(pd.DataFrame(image_compare_out["ranked_items"]), use_container_width=True)
 
         # Video comparison results
         if video_compare_out is not None:
             st.subheader("8. Video Comparison Results")
-            st.write("Video clips are compared using summary-feature distance from the group centroid.")
+            st.write("Video clips are ranked by distance from the group centre using compact motion-based detector summaries.")
             st.dataframe(pd.DataFrame(video_compare_out["ranked_items"]), use_container_width=True)
 
         # Per-modality cards
