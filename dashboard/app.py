@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from skimage.io import imread
+from tensorflow.keras.models import load_model
 
 # Make project root importable
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,8 @@ from src.detection_tabular_single_table import detect_single_table_tabular_for_f
 from src.detection_timeseries import detect_timeseries_for_fusion
 from src.detection_image import detect_image_for_fusion
 from src.detection_video import detect_video_clip_for_fusion
+from src.detection_image_compare import load_image_input, compare_image_set
+from src.detection_video_compare import compare_video_set
 from src.fusion_evaluate import fuse_weighted_average
 
 
@@ -107,12 +110,23 @@ vote_k = st.sidebar.slider(
 )
 
 st.sidebar.header("Image Settings")
-st.sidebar.caption("These control the image branch decision rule.")
 image_threshold = st.sidebar.slider(
     "Image Similarity / Decision Threshold",
     0.0, 1.0, 0.35, 0.01
 )
 
+st.sidebar.header("Comparison Thresholds")
+image_compare_threshold = st.sidebar.slider(
+    "Image Comparison Threshold", 0.0, 1.0, 0.65, 0.01
+)
+video_compare_threshold = st.sidebar.slider(
+    "Video Comparison Threshold", 0.0, 1.0, 0.65, 0.01
+)
+single_video_threshold = st.sidebar.slider(
+    "Single Video Decision Threshold", 0.0, 1.0, 0.90, 0.01
+)
+st.sidebar.success("Loaded autoencoder: autoencoder.keras")
+st.sidebar.success("Loaded calibration: autoencoder_calibration.json")
 
 # Helpers
 def parse_numeric_tabular_text(text: str) -> np.ndarray:
@@ -133,7 +147,12 @@ def parse_numeric_tabular_text(text: str) -> np.ndarray:
 
 
 def parse_csv_floats(text: str) -> list[float]:
-    return [float(x.strip()) for x in text.split(",") if x.strip()]
+    cleaned = text.replace("\n", ",").replace(" ", ",")
+    return [float(x.strip()) for x in cleaned.split(",") if x.strip()]
+
+
+def parse_lines(text: str) -> list[str]:
+    return [line.strip() for line in text.splitlines() if line.strip()]
 
 
 def label_text(label: int) -> str:
@@ -153,6 +172,8 @@ def explanation_for_method(method: str) -> str:
         "reconstruction_error": "This image score is based on reconstruction error from the image model.",
         "std_heuristic": "This image score is based on the spread of pixel values as a lightweight baseline.",
         "frame_diff_p95": "This video score measures strong motion changes between consecutive frames.",
+        "centroid_distance_image_compare": "This compares multiple uploaded images using feature distance from the group centre.",
+        "centroid_distance_video_compare": "This compares multiple video clips using summary-feature distance from the group centre.",
     }
     return explanations.get(method, "This method produced the anomaly score for the modality.")
 
@@ -170,10 +191,95 @@ def build_modality_table(results: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def image_compare_to_fusion(compare_out: dict) -> dict:
+    top = compare_out.get("most_abnormal")
+    if not top:
+        return {
+            "score_raw": 0.0,
+            "score_norm": 0.0,
+            "label": 0,
+            "method": "centroid_distance_image_compare",
+            "meta": {"n_items": 0},
+        }
+
+    return {
+        "score_raw": float(top["score_raw"]),
+        "score_norm": float(top["score_norm"]),
+        "label": int(top["label"]),
+        "method": "centroid_distance_image_compare",
+        "meta": {
+            "n_items": int(compare_out.get("n_items", 0)),
+            "threshold": float(compare_out.get("threshold", 0.65)),
+            "most_abnormal_name": top.get("name", ""),
+            "items": compare_out.get("items", []),
+            "ranked_items": compare_out.get("ranked_items", []),
+        },
+    }
+
+
+def video_compare_to_fusion(compare_out: dict) -> dict:
+    top = compare_out.get("most_abnormal")
+    if not top:
+        return {
+            "score_raw": 0.0,
+            "score_norm": 0.0,
+            "label": 0,
+            "method": "centroid_distance_video_compare",
+            "meta": {"n_items": 0},
+        }
+
+    return {
+        "score_raw": float(top["score_raw"]),
+        "score_norm": float(top["score_norm"]),
+        "label": int(top["label"]),
+        "method": "centroid_distance_video_compare",
+        "meta": {
+            "n_items": int(compare_out.get("n_items", 0)),
+            "threshold": float(compare_out.get("threshold", 0.65)),
+            "most_abnormal_name": top.get("name", ""),
+            "items": compare_out.get("items", []),
+            "ranked_items": compare_out.get("ranked_items", []),
+        },
+    }
+
+
+@st.cache_resource
+def load_image_model_and_calibration():
+    model = None
+    calib = None
+
+    model_path = ROOT / "models" / "autoencoder.keras"
+    calib_path = ROOT / "models" / "autoencoder_calibration.json"
+
+    if model_path.exists():
+        try:
+            model = load_model(model_path)
+        except Exception as e:
+            st.warning(f"Could not load trained image model: {e}")
+
+    if calib_path.exists():
+        try:
+            with open(calib_path, "r", encoding="utf-8") as f:
+                calib = json.load(f)
+        except Exception as e:
+            st.warning(f"Could not load image calibration file: {e}")
+
+    return model, calib
+
+
+# Load trained image model once
+image_model, image_calib = load_image_model_and_calibration()
+
+
 # Demo defaults
 DEMO_TABULAR_TEXT = "1,1\n1,1\n1,100\n1,1"
 DEMO_TS_TEXT = "0,0,0.1,0.2,3.5,0.1,0.0"
 DEMO_VIDEO_CLIP = "data/ucsd/UCSD_Anomaly_Dataset.v1p2/UCSDped1/Test/Test001"
+DEMO_MULTI_VIDEO = (
+    "data/ucsd/UCSD_Anomaly_Dataset.v1p2/UCSDped1/Test/Test001\n"
+    "data/ucsd/UCSD_Anomaly_Dataset.v1p2/UCSDped1/Test/Test002\n"
+    "data/ucsd/UCSD_Anomaly_Dataset.v1p2/UCSDped1/Test/Test003"
+)
 
 
 # Input section
@@ -183,7 +289,6 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.markdown("#### Tabular Input")
-
     use_tabular = st.checkbox("Use tabular modality", value=True)
 
     if use_tabular:
@@ -250,32 +355,85 @@ with col1:
 with col2:
     st.markdown("#### Image Input")
     use_image = st.checkbox("Use image modality", value=False)
+
     if use_image:
-        st.caption("Upload your own image. No default image is used.")
-        uploaded_image = st.file_uploader(
-            "Upload an image",
-            type=["jpg", "jpeg", "png"]
+        if image_model is not None:
+            st.caption("Trained image model loaded: models/autoencoder.keras")
+        else:
+            st.caption("No trained image model loaded. Image branch will use fallback scoring.")
+
+        image_mode = st.radio(
+            "Image analysis mode",
+            ["Single Image", "Compare Multiple Images"],
+            horizontal=True
         )
+
+        if image_mode == "Single Image":
+            st.caption("Upload your own image. No default image is used.")
+            uploaded_image = st.file_uploader(
+                "Upload an image",
+                type=["jpg", "jpeg", "png"],
+                key="single_image_upload"
+            )
+            uploaded_images = []
+        else:
+            st.caption("Upload multiple images to compare them against each other.")
+            uploaded_images = st.file_uploader(
+                "Upload multiple images",
+                type=["jpg", "jpeg", "png"],
+                accept_multiple_files=True,
+                key="multi_image_upload"
+            )
+            uploaded_image = None
     else:
+        image_mode = None
         uploaded_image = None
+        uploaded_images = []
 
     st.markdown("#### Video Input")
     use_video = st.checkbox("Use video modality", value=False)
+
     if use_video:
-        st.caption("A demo UCSD clip path is pre-filled. You can replace it with your own.")
-        video_clip_path = st.text_input(
-            "UCSD clip folder path",
-            value=DEMO_VIDEO_CLIP
+        video_mode = st.radio(
+            "Video analysis mode",
+            ["Single Video", "Compare Multiple Videos"],
+            horizontal=True
         )
+
+        if video_mode == "Single Video":
+            st.caption("A demo UCSD clip path is pre-filled. You can replace it.")
+            video_clip_path = st.text_input(
+                "UCSD clip folder path",
+                value=DEMO_VIDEO_CLIP
+            )
+            multi_video_paths_text = ""
+        else:
+            st.caption("Demo clip paths are pre-filled. You can replace or remove them.")
+            multi_video_paths_text = st.text_area(
+                "Video clip folder paths (one per line)",
+                value=DEMO_MULTI_VIDEO,
+                height=120
+            )
+            video_clip_path = ""
     else:
+        video_mode = None
         video_clip_path = ""
+        multi_video_paths_text = ""
 
 # Preview image only if uploaded
 preview_col1, preview_col2 = st.columns([1, 2])
 with preview_col1:
-    if uploaded_image is not None:
-        preview_img = imread(uploaded_image)
-        st.image(preview_img, caption="Uploaded image", use_container_width=True)
+    if use_image:
+        if image_mode == "Single Image" and uploaded_image is not None:
+            uploaded_image.seek(0)
+            preview_img = imread(uploaded_image)
+            st.image(preview_img, caption="Uploaded image", use_container_width=True)
+
+        elif image_mode == "Compare Multiple Images" and uploaded_images:
+            st.caption(f"{len(uploaded_images)} images uploaded for comparison")
+            st.write("Uploaded files:")
+            for f in uploaded_images:
+                st.write(f"- {f.name}")
 
 
 # Run section
@@ -289,6 +447,9 @@ if st.button("Run Multimodal Detection", type="primary"):
         mixed_test_preview = None
         single_table_preview = None
         image_source = "Not used"
+        video_source = "Not used"
+        image_compare_out = None
+        video_compare_out = None
 
         # Tabular
         if use_tabular:
@@ -338,26 +499,60 @@ if st.button("Run Multimodal Detection", type="primary"):
 
         # Image
         if use_image:
-            if uploaded_image is None:
-                raise ValueError("Please upload an image or untick the image modality.")
-            image = imread(uploaded_image)
-            image_source = "Uploaded image"
-            img_result = detect_image_for_fusion(
-                model=None,
-                image=image,
-                threshold=image_threshold
-            )
-            results["image"] = img_result
+            if image_mode == "Single Image":
+                if uploaded_image is None:
+                    raise ValueError("Please upload an image or change the image mode.")
+                uploaded_image.seek(0)
+                image = imread(uploaded_image)
+                image_source = "Uploaded image"
+                img_result = detect_image_for_fusion(
+                    model=image_model,
+                    image=image,
+                    threshold=image_threshold,
+                    calib=image_calib,
+                )
+                results["image"] = img_result
+
+            elif image_mode == "Compare Multiple Images":
+                if len(uploaded_images) < 2:
+                    raise ValueError("Please upload at least two images for image comparison.")
+                image_arrays = [load_image_input(f) for f in uploaded_images]
+                image_names = [f.name for f in uploaded_images]
+
+                image_compare_out = compare_image_set(
+                    images=image_arrays,
+                    names=image_names,
+                    threshold=image_compare_threshold,
+                )
+                img_result = image_compare_to_fusion(image_compare_out)
+                results["image"] = img_result
+                image_source = f"{len(uploaded_images)} uploaded images compared"
 
         # Video
         if use_video:
-            if not video_clip_path.strip():
-                raise ValueError("Please provide a video clip path or untick the video modality.")
-            vid_result = detect_video_clip_for_fusion(
-                video_clip_path,
-                threshold=0.90
-            )
-            results["video"] = vid_result
+            if video_mode == "Single Video":
+                if not video_clip_path.strip():
+                    raise ValueError("Please provide a video clip path or change the video mode.")
+                vid_result = detect_video_clip_for_fusion(
+                    video_clip_path,
+                    threshold=single_video_threshold
+                )
+                results["video"] = vid_result
+                video_source = video_clip_path
+
+            elif video_mode == "Compare Multiple Videos":
+                clip_paths = parse_lines(multi_video_paths_text)
+                if len(clip_paths) < 2:
+                    raise ValueError("Please provide at least two clip paths for video comparison.")
+
+                video_compare_out = compare_video_set(
+                    clip_paths=clip_paths,
+                    names=[Path(p).name for p in clip_paths],
+                    threshold=video_compare_threshold,
+                )
+                vid_result = video_compare_to_fusion(video_compare_out)
+                results["video"] = vid_result
+                video_source = f"{len(clip_paths)} clip paths compared"
 
         if not results:
             raise ValueError("Please provide at least one modality before running detection.")
@@ -438,8 +633,20 @@ if st.button("Run Multimodal Detection", type="primary"):
             else:
                 st.info("No abnormal rows were flagged in the uploaded table.")
 
+        # Image comparison results
+        if image_compare_out is not None:
+            st.subheader("7. Image Comparison Results")
+            st.write("Images are ranked using centroid distance from the group centre, with SSIM shown as supporting similarity evidence.")
+            st.dataframe(pd.DataFrame(image_compare_out["ranked_items"]), use_container_width=True)
+
+        # Video comparison results
+        if video_compare_out is not None:
+            st.subheader("8. Video Comparison Results")
+            st.write("Video clips are ranked by distance from the group centre using compact motion-based detector summaries.")
+            st.dataframe(pd.DataFrame(video_compare_out["ranked_items"]), use_container_width=True)
+
         # Per-modality cards
-        st.subheader("7. What Each Modality Means")
+        st.subheader("9. What Each Modality Means")
         card_cols = st.columns(len(results))
 
         for idx, (modality, result) in enumerate(results.items()):
@@ -452,7 +659,7 @@ if st.button("Run Multimodal Detection", type="primary"):
                 st.caption(explanation_for_method(result.get("method", "")))
 
         # Score chart
-        st.subheader("8. Normalized Score Comparison")
+        st.subheader("10. Normalized Score Comparison")
         chart_df = pd.DataFrame({
             "Modality": [m.capitalize() for m in results.keys()],
             "Normalized Score": [float(r["score_norm"]) for r in results.values()]
@@ -461,7 +668,7 @@ if st.button("Run Multimodal Detection", type="primary"):
         st.bar_chart(chart_df)
 
         # Inputs used
-        st.subheader("9. Inputs Used in This Run")
+        st.subheader("11. Inputs Used in This Run")
         st.markdown(
             f"""
 - **Tabular used:** `{use_tabular}`
@@ -470,15 +677,20 @@ if st.button("Run Multimodal Detection", type="primary"):
 - **Time-series used:** `{use_timeseries}`
 - **Time-series input:** `{ts_text if ts_text else 'Not used'}`
 - **Image used:** `{use_image}`
+- **Image mode:** `{image_mode if image_mode else 'Not used'}`
 - **Image source:** `{image_source}`
 - **Image threshold:** `{image_threshold if use_image else 'Not used'}`
+- **Image comparison threshold:** `{image_compare_threshold if use_image and image_mode == 'Compare Multiple Images' else 'Not used'}`
 - **Video used:** `{use_video}`
-- **Video clip path:** `{video_clip_path if video_clip_path else 'Not used'}`
+- **Video mode:** `{video_mode if video_mode else 'Not used'}`
+- **Video source:** `{video_source}`
+- **Single video threshold:** `{single_video_threshold if use_video and video_mode == 'Single Video' else 'Not used'}`
+- **Video comparison threshold:** `{video_compare_threshold if use_video and video_mode == 'Compare Multiple Videos' else 'Not used'}`
 """
         )
 
         # Technical JSON
-        with st.expander("10. Technical JSON Output"):
+        with st.expander("12. Technical JSON Output"):
             payload = {
                 "weights": weights,
                 "thresholds": {
@@ -487,9 +699,16 @@ if st.button("Run Multimodal Detection", type="primary"):
                     "fused_threshold": fused_threshold,
                     "vote_k": vote_k,
                     "image_threshold": image_threshold,
+                    "image_compare_threshold": image_compare_threshold,
+                    "video_compare_threshold": video_compare_threshold,
+                    "single_video_threshold": single_video_threshold,
                 },
                 "results": results,
                 "fusion": fused,
+                "image_compare": image_compare_out,
+                "video_compare": video_compare_out,
+                "image_model_loaded": image_model is not None,
+                "image_calibration_loaded": image_calib is not None,
             }
             st.code(json.dumps(payload, indent=2, default=str), language="json")
 
