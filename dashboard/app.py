@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 import json
+import inspect
 
 import numpy as np
 import pandas as pd
@@ -29,10 +30,10 @@ from src.detection_video_compare import compare_video_set
 from src.fusion_evaluate import fuse_weighted_average
 
 
-# Page setup
+# ---------------- PAGE SETUP ----------------
 st.set_page_config(
     page_title="Multimodal Anomaly Detection Dashboard",
-    layout="wide"
+    layout="wide",
 )
 
 st.title("Multimodal Anomaly Detection Dashboard")
@@ -77,58 +78,7 @@ even if the others look normal.
     )
 
 
-# Sidebar settings
-st.sidebar.header("Fusion Weights")
-st.sidebar.caption("Higher weight means that modality has more influence on the final decision.")
-
-video_w = st.sidebar.slider("Video Weight", 0.0, 3.0, 2.0, 0.1)
-tabular_w = st.sidebar.slider("Tabular Weight", 0.0, 3.0, 1.5, 0.1)
-timeseries_w = st.sidebar.slider("Time-series Weight", 0.0, 3.0, 1.0, 0.1)
-image_w = st.sidebar.slider("Image Weight", 0.0, 3.0, 0.8, 0.1)
-
-weights = {
-    "video": video_w,
-    "tabular": tabular_w,
-    "timeseries": timeseries_w,
-    "image": image_w,
-}
-
-st.sidebar.header("Fusion Thresholds")
-st.sidebar.caption("These thresholds control how easily the system declares an anomaly.")
-
-strong_threshold = st.sidebar.slider(
-    "Strong Threshold (general modalities)", 0.0, 1.0, 0.80, 0.01
-)
-strong_threshold_video = st.sidebar.slider(
-    "Strong Threshold (video only)", 0.0, 1.0, 0.95, 0.01
-)
-fused_threshold = st.sidebar.slider(
-    "Fused Score Threshold", 0.0, 1.0, 0.65, 0.01
-)
-vote_k = st.sidebar.slider(
-    "Minimum anomaly votes needed", 1, 4, 2, 1
-)
-
-st.sidebar.header("Image Settings")
-image_threshold = st.sidebar.slider(
-    "Image Similarity / Decision Threshold",
-    0.0, 1.0, 0.35, 0.01
-)
-
-st.sidebar.header("Comparison Thresholds")
-image_compare_threshold = st.sidebar.slider(
-    "Image Comparison Threshold", 0.0, 1.0, 0.65, 0.01
-)
-video_compare_threshold = st.sidebar.slider(
-    "Video Comparison Threshold", 0.0, 1.0, 0.65, 0.01
-)
-single_video_threshold = st.sidebar.slider(
-    "Single Video Decision Threshold", 0.0, 1.0, 0.90, 0.01
-)
-st.sidebar.success("Loaded autoencoder: autoencoder.keras")
-st.sidebar.success("Loaded calibration: autoencoder_calibration.json")
-
-# Helpers
+# ---------------- HELPERS ----------------
 def parse_numeric_tabular_text(text: str) -> np.ndarray:
     lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
     if not lines:
@@ -181,13 +131,15 @@ def explanation_for_method(method: str) -> str:
 def build_modality_table(results: dict) -> pd.DataFrame:
     rows = []
     for modality, result in results.items():
-        rows.append({
-            "Modality": modality.capitalize(),
-            "Method": result.get("method", ""),
-            "Score Raw": round(float(result["score_raw"]), 4),
-            "Score Norm": round(float(result["score_norm"]), 4),
-            "Label": label_text(int(result["label"])),
-        })
+        rows.append(
+            {
+                "Modality": modality.capitalize(),
+                "Method": result.get("method", ""),
+                "Score Raw": round(float(result["score_raw"]), 4),
+                "Score Norm": round(float(result["score_norm"]), 4),
+                "Label": label_text(int(result["label"])),
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -195,6 +147,7 @@ def image_compare_to_fusion(compare_out: dict) -> dict:
     top = compare_out.get("most_abnormal")
     if not top:
         return {
+            "modality": "image",
             "score_raw": 0.0,
             "score_norm": 0.0,
             "label": 0,
@@ -203,6 +156,7 @@ def image_compare_to_fusion(compare_out: dict) -> dict:
         }
 
     return {
+        "modality": "image",
         "score_raw": float(top["score_raw"]),
         "score_norm": float(top["score_norm"]),
         "label": int(top["label"]),
@@ -221,6 +175,7 @@ def video_compare_to_fusion(compare_out: dict) -> dict:
     top = compare_out.get("most_abnormal")
     if not top:
         return {
+            "modality": "video",
             "score_raw": 0.0,
             "score_norm": 0.0,
             "label": 0,
@@ -229,6 +184,7 @@ def video_compare_to_fusion(compare_out: dict) -> dict:
         }
 
     return {
+        "modality": "video",
         "score_raw": float(top["score_raw"]),
         "score_norm": float(top["score_norm"]),
         "label": int(top["label"]),
@@ -243,35 +199,159 @@ def video_compare_to_fusion(compare_out: dict) -> dict:
     }
 
 
+def call_with_supported_kwargs(func, *args, **kwargs):
+    sig = inspect.signature(func)
+    supported = {k: v for k, v in kwargs.items() if k in sig.parameters}
+    return func(*args, **supported)
+
+
+def load_json_if_exists(path: Path):
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        st.warning(f"Could not load {path.name}: {e}")
+        return None
+
+
 @st.cache_resource
-def load_image_model_and_calibration():
-    model = None
-    calib = None
-
+def load_image_model():
     model_path = ROOT / "models" / "autoencoder.keras"
-    calib_path = ROOT / "models" / "autoencoder_calibration.json"
-
-    if model_path.exists():
-        try:
-            model = load_model(model_path)
-        except Exception as e:
-            st.warning(f"Could not load trained image model: {e}")
-
-    if calib_path.exists():
-        try:
-            with open(calib_path, "r", encoding="utf-8") as f:
-                calib = json.load(f)
-        except Exception as e:
-            st.warning(f"Could not load image calibration file: {e}")
-
-    return model, calib
+    if not model_path.exists():
+        return None
+    try:
+        return load_model(model_path)
+    except Exception as e:
+        st.warning(f"Could not load trained image model: {e}")
+        return None
 
 
-# Load trained image model once
-image_model, image_calib = load_image_model_and_calibration()
+@st.cache_data
+def load_calibration(name: str):
+    candidates = [ROOT / "models" / f"{name}_calibration.json"]
+    if name == "image":
+        candidates.append(ROOT / "models" / "autoencoder_calibration.json")
+
+    for path in candidates:
+        calib = load_json_if_exists(path)
+        if calib is not None:
+            return calib
+    return None
 
 
-# Demo defaults
+# ---------------- LOAD MODEL / CALIBRATION ----------------
+image_model = load_image_model()
+
+tabular_calib = load_calibration("tabular")
+timeseries_calib = load_calibration("timeseries")
+image_calib = load_calibration("image")
+video_calib = load_calibration("video")
+
+
+# ---------------- SIDEBAR SETTINGS ----------------
+st.sidebar.header("Fusion Weights")
+st.sidebar.caption("Higher weight means that modality has more influence on the final decision.")
+
+video_w = st.sidebar.slider("Video Weight", 0.0, 3.0, 2.0, 0.1)
+tabular_w = st.sidebar.slider("Tabular Weight", 0.0, 3.0, 1.5, 0.1)
+timeseries_w = st.sidebar.slider("Time-series Weight", 0.0, 3.0, 1.0, 0.1)
+image_w = st.sidebar.slider("Image Weight", 0.0, 3.0, 0.8, 0.1)
+
+weights = {
+    "video": video_w,
+    "tabular": tabular_w,
+    "timeseries": timeseries_w,
+    "image": image_w,
+}
+
+st.sidebar.header("Fusion Thresholds")
+st.sidebar.caption("These thresholds control the final weighted fusion and vote decision.")
+
+fused_threshold = st.sidebar.slider(
+    "Fused Score Threshold", 0.0, 1.0, 0.65, 0.01
+)
+vote_k = st.sidebar.slider(
+    "Minimum anomaly votes needed", 1, 4, 2, 1
+)
+
+st.sidebar.header("Modality Thresholds")
+st.sidebar.caption("These thresholds control the anomaly sensitivity of each individual modality.")
+
+tabular_threshold = st.sidebar.slider(
+    "Tabular Threshold", 0.0, 1.0, 0.65, 0.01
+)
+timeseries_threshold = st.sidebar.slider(
+    "Time-series Threshold", 0.0, 1.0, 0.65, 0.01
+)
+image_threshold = st.sidebar.slider(
+    "Image Threshold", 0.0, 1.0, 0.35, 0.01
+)
+video_threshold = st.sidebar.slider(
+    "Video Threshold", 0.0, 1.0, 0.90, 0.01
+)
+
+st.sidebar.header("Strong-Modality Override Thresholds")
+st.sidebar.caption("If a modality score exceeds its strong threshold, it can trigger an override decision.")
+
+strong_threshold_tabular = st.sidebar.slider(
+    "Strong Threshold (tabular)", 0.0, 1.0, 0.80, 0.01
+)
+strong_threshold_timeseries = st.sidebar.slider(
+    "Strong Threshold (time-series)", 0.0, 1.0, 0.80, 0.01
+)
+strong_threshold_image = st.sidebar.slider(
+    "Strong Threshold (image)", 0.0, 1.0, 0.80, 0.01
+)
+strong_threshold_video = st.sidebar.slider(
+    "Strong Threshold (video)", 0.0, 1.0, 0.95, 0.01
+)
+
+strong_thresholds = {
+    "tabular": strong_threshold_tabular,
+    "timeseries": strong_threshold_timeseries,
+    "image": strong_threshold_image,
+    "video": strong_threshold_video,
+}
+
+st.sidebar.header("Comparison Thresholds")
+st.sidebar.caption("These thresholds are used in image-set and video-set comparison modes.")
+
+image_compare_threshold = st.sidebar.slider(
+    "Image Comparison Threshold", 0.0, 1.0, 0.65, 0.01
+)
+video_compare_threshold = st.sidebar.slider(
+    "Video Comparison Threshold", 0.0, 1.0, 0.65, 0.01
+)
+
+if image_model is not None:
+    st.sidebar.success("Loaded autoencoder: autoencoder.keras")
+else:
+    st.sidebar.warning("No autoencoder model loaded")
+
+if image_calib is not None:
+    st.sidebar.success("Loaded image calibration")
+else:
+    st.sidebar.info("No image calibration file loaded")
+
+if tabular_calib is not None:
+    st.sidebar.success("Loaded tabular calibration")
+else:
+    st.sidebar.info("No tabular calibration file loaded")
+
+if timeseries_calib is not None:
+    st.sidebar.success("Loaded time-series calibration")
+else:
+    st.sidebar.info("No time-series calibration file loaded")
+
+if video_calib is not None:
+    st.sidebar.success("Loaded video calibration")
+else:
+    st.sidebar.info("No video calibration file loaded")
+
+
+# ---------------- DEMO DEFAULTS ----------------
 DEMO_TABULAR_TEXT = "1,1\n1,1\n1,100\n1,1"
 DEMO_TS_TEXT = "0,0,0.1,0.2,3.5,0.1,0.0"
 DEMO_VIDEO_CLIP = "data/ucsd/UCSD_Anomaly_Dataset.v1p2/UCSDped1/Test/Test001"
@@ -282,7 +362,7 @@ DEMO_MULTI_VIDEO = (
 )
 
 
-# Input section
+# ---------------- INPUT SECTION ----------------
 st.subheader("1. Input Data")
 
 col1, col2 = st.columns(2)
@@ -295,7 +375,7 @@ with col1:
         tabular_mode = st.radio(
             "Choose tabular input type",
             ["Numeric Tabular", "Mixed Tabular CSV", "Single Table Row Anomaly Detection"],
-            horizontal=True
+            horizontal=True,
         )
 
         if tabular_mode == "Numeric Tabular":
@@ -303,7 +383,7 @@ with col1:
             tabular_text = st.text_area(
                 "Enter numeric tabular values",
                 value=DEMO_TABULAR_TEXT,
-                height=120
+                height=120,
             )
             mixed_train_csv = None
             mixed_test_csv = None
@@ -314,12 +394,12 @@ with col1:
             mixed_train_csv = st.file_uploader(
                 "Upload mixed tabular training/reference CSV",
                 type=["csv"],
-                key="mixed_train_csv"
+                key="mixed_train_csv",
             )
             mixed_test_csv = st.file_uploader(
                 "Upload mixed tabular test CSV",
                 type=["csv"],
-                key="mixed_test_csv"
+                key="mixed_test_csv",
             )
             single_table_csv = None
             tabular_text = ""
@@ -329,7 +409,7 @@ with col1:
             single_table_csv = st.file_uploader(
                 "Upload single table CSV",
                 type=["csv"],
-                key="single_table_csv"
+                key="single_table_csv",
             )
             mixed_train_csv = None
             mixed_test_csv = None
@@ -347,7 +427,7 @@ with col1:
         st.caption("Demo example is pre-filled. You can edit or remove it.")
         ts_text = st.text_input(
             "Enter time-series values (comma-separated)",
-            value=DEMO_TS_TEXT
+            value=DEMO_TS_TEXT,
         )
     else:
         ts_text = ""
@@ -365,7 +445,7 @@ with col2:
         image_mode = st.radio(
             "Image analysis mode",
             ["Single Image", "Compare Multiple Images"],
-            horizontal=True
+            horizontal=True,
         )
 
         if image_mode == "Single Image":
@@ -373,7 +453,7 @@ with col2:
             uploaded_image = st.file_uploader(
                 "Upload an image",
                 type=["jpg", "jpeg", "png"],
-                key="single_image_upload"
+                key="single_image_upload",
             )
             uploaded_images = []
         else:
@@ -382,7 +462,7 @@ with col2:
                 "Upload multiple images",
                 type=["jpg", "jpeg", "png"],
                 accept_multiple_files=True,
-                key="multi_image_upload"
+                key="multi_image_upload",
             )
             uploaded_image = None
     else:
@@ -397,14 +477,14 @@ with col2:
         video_mode = st.radio(
             "Video analysis mode",
             ["Single Video", "Compare Multiple Videos"],
-            horizontal=True
+            horizontal=True,
         )
 
         if video_mode == "Single Video":
             st.caption("A demo UCSD clip path is pre-filled. You can replace it.")
             video_clip_path = st.text_input(
                 "UCSD clip folder path",
-                value=DEMO_VIDEO_CLIP
+                value=DEMO_VIDEO_CLIP,
             )
             multi_video_paths_text = ""
         else:
@@ -412,7 +492,7 @@ with col2:
             multi_video_paths_text = st.text_area(
                 "Video clip folder paths (one per line)",
                 value=DEMO_MULTI_VIDEO,
-                height=120
+                height=120,
             )
             video_clip_path = ""
     else:
@@ -420,7 +500,8 @@ with col2:
         video_clip_path = ""
         multi_video_paths_text = ""
 
-# Preview image only if uploaded
+
+# ---------------- PREVIEW ----------------
 preview_col1, preview_col2 = st.columns([1, 2])
 with preview_col1:
     if use_image:
@@ -436,7 +517,7 @@ with preview_col1:
                 st.write(f"- {f.name}")
 
 
-# Run section
+# ---------------- RUN SECTION ----------------
 st.subheader("2. Run Detection")
 
 if st.button("Run Multimodal Detection", type="primary"):
@@ -457,7 +538,12 @@ if st.button("Run Multimodal Detection", type="primary"):
                 if not tabular_text.strip():
                     raise ValueError("Please enter numeric tabular data.")
                 tabular_data = parse_numeric_tabular_text(tabular_text)
-                tab_result = detect_tabular_for_fusion(tabular_data)
+                tab_result = call_with_supported_kwargs(
+                    detect_tabular_for_fusion,
+                    tabular_data,
+                    threshold=tabular_threshold,
+                    calib=tabular_calib,
+                )
                 results["tabular"] = tab_result
                 tabular_input_summary = tabular_text
 
@@ -471,7 +557,13 @@ if st.button("Run Multimodal Detection", type="primary"):
                 test_df = pd.read_csv(mixed_test_csv)
 
                 model = fit_mixed_tabular_model(train_df)
-                tab_result = detect_mixed_tabular_for_fusion(model, test_df)
+                tab_result = call_with_supported_kwargs(
+                    detect_mixed_tabular_for_fusion,
+                    model,
+                    test_df,
+                    threshold=tabular_threshold,
+                    calib=tabular_calib,
+                )
                 results["tabular"] = tab_result
 
                 tabular_input_summary = "Mixed Tabular CSV upload"
@@ -483,7 +575,12 @@ if st.button("Run Multimodal Detection", type="primary"):
                     raise ValueError("Please upload a single table CSV.")
 
                 single_table_df = pd.read_csv(single_table_csv)
-                tab_result = detect_single_table_tabular_for_fusion(single_table_df)
+                tab_result = call_with_supported_kwargs(
+                    detect_single_table_tabular_for_fusion,
+                    single_table_df,
+                    threshold=tabular_threshold,
+                    calib=tabular_calib,
+                )
                 results["tabular"] = tab_result
 
                 tabular_input_summary = "Single Table Row Anomaly Detection CSV upload"
@@ -494,7 +591,13 @@ if st.button("Run Multimodal Detection", type="primary"):
             if not ts_text.strip():
                 raise ValueError("Please enter time-series data or untick the time-series modality.")
             ts_data = np.asarray(parse_csv_floats(ts_text), dtype=float)
-            ts_result = detect_timeseries_for_fusion(ts_data, window=3)
+            ts_result = call_with_supported_kwargs(
+                detect_timeseries_for_fusion,
+                ts_data,
+                window=3,
+                threshold=timeseries_threshold,
+                calib=timeseries_calib,
+            )
             results["timeseries"] = ts_result
 
         # Image
@@ -505,7 +608,8 @@ if st.button("Run Multimodal Detection", type="primary"):
                 uploaded_image.seek(0)
                 image = imread(uploaded_image)
                 image_source = "Uploaded image"
-                img_result = detect_image_for_fusion(
+                img_result = call_with_supported_kwargs(
+                    detect_image_for_fusion,
                     model=image_model,
                     image=image,
                     threshold=image_threshold,
@@ -533,9 +637,11 @@ if st.button("Run Multimodal Detection", type="primary"):
             if video_mode == "Single Video":
                 if not video_clip_path.strip():
                     raise ValueError("Please provide a video clip path or change the video mode.")
-                vid_result = detect_video_clip_for_fusion(
+                vid_result = call_with_supported_kwargs(
+                    detect_video_clip_for_fusion,
                     video_clip_path,
-                    threshold=single_video_threshold
+                    threshold=video_threshold,
+                    calib=video_calib,
                 )
                 results["video"] = vid_result
                 video_source = video_clip_path
@@ -558,13 +664,19 @@ if st.button("Run Multimodal Detection", type="primary"):
             raise ValueError("Please provide at least one modality before running detection.")
 
         # Fusion
-        fused = fuse_weighted_average(
+        fused = call_with_supported_kwargs(
+            fuse_weighted_average,
             results=results,
             weights=weights,
-            strong_threshold=strong_threshold,
-            strong_threshold_video=strong_threshold_video,
             fused_threshold=fused_threshold,
             vote_k=vote_k,
+            strong_thresholds=strong_thresholds,
+            strong_threshold=max(
+                strong_threshold_tabular,
+                strong_threshold_timeseries,
+                strong_threshold_image,
+            ),
+            strong_threshold_video=strong_threshold_video,
         )
 
         # Final result
@@ -660,10 +772,12 @@ if st.button("Run Multimodal Detection", type="primary"):
 
         # Score chart
         st.subheader("10. Normalized Score Comparison")
-        chart_df = pd.DataFrame({
-            "Modality": [m.capitalize() for m in results.keys()],
-            "Normalized Score": [float(r["score_norm"]) for r in results.values()]
-        }).set_index("Modality")
+        chart_df = pd.DataFrame(
+            {
+                "Modality": [m.capitalize() for m in results.keys()],
+                "Normalized Score": [float(r["score_norm"]) for r in results.values()],
+            }
+        ).set_index("Modality")
 
         st.bar_chart(chart_df)
 
@@ -674,18 +788,31 @@ if st.button("Run Multimodal Detection", type="primary"):
 - **Tabular used:** `{use_tabular}`
 - **Tabular mode:** `{tabular_mode if tabular_mode else 'Not used'}`
 - **Tabular input:** `{tabular_input_summary}`
+- **Tabular threshold:** `{tabular_threshold if use_tabular else 'Not used'}`
+- **Tabular strong threshold:** `{strong_threshold_tabular if use_tabular else 'Not used'}`
+- **Tabular calibration loaded:** `{tabular_calib is not None}`
+
 - **Time-series used:** `{use_timeseries}`
 - **Time-series input:** `{ts_text if ts_text else 'Not used'}`
+- **Time-series threshold:** `{timeseries_threshold if use_timeseries else 'Not used'}`
+- **Time-series strong threshold:** `{strong_threshold_timeseries if use_timeseries else 'Not used'}`
+- **Time-series calibration loaded:** `{timeseries_calib is not None}`
+
 - **Image used:** `{use_image}`
 - **Image mode:** `{image_mode if image_mode else 'Not used'}`
 - **Image source:** `{image_source}`
 - **Image threshold:** `{image_threshold if use_image else 'Not used'}`
+- **Image strong threshold:** `{strong_threshold_image if use_image else 'Not used'}`
 - **Image comparison threshold:** `{image_compare_threshold if use_image and image_mode == 'Compare Multiple Images' else 'Not used'}`
+- **Image calibration loaded:** `{image_calib is not None}`
+
 - **Video used:** `{use_video}`
 - **Video mode:** `{video_mode if video_mode else 'Not used'}`
 - **Video source:** `{video_source}`
-- **Single video threshold:** `{single_video_threshold if use_video and video_mode == 'Single Video' else 'Not used'}`
+- **Video threshold:** `{video_threshold if use_video and video_mode == 'Single Video' else 'Not used'}`
+- **Video strong threshold:** `{strong_threshold_video if use_video else 'Not used'}`
 - **Video comparison threshold:** `{video_compare_threshold if use_video and video_mode == 'Compare Multiple Videos' else 'Not used'}`
+- **Video calibration loaded:** `{video_calib is not None}`
 """
         )
 
@@ -694,21 +821,27 @@ if st.button("Run Multimodal Detection", type="primary"):
             payload = {
                 "weights": weights,
                 "thresholds": {
-                    "strong_threshold": strong_threshold,
-                    "strong_threshold_video": strong_threshold_video,
                     "fused_threshold": fused_threshold,
                     "vote_k": vote_k,
+                    "tabular_threshold": tabular_threshold,
+                    "timeseries_threshold": timeseries_threshold,
                     "image_threshold": image_threshold,
+                    "video_threshold": video_threshold,
+                    "strong_thresholds": strong_thresholds,
                     "image_compare_threshold": image_compare_threshold,
                     "video_compare_threshold": video_compare_threshold,
-                    "single_video_threshold": single_video_threshold,
+                },
+                "calibration_loaded": {
+                    "tabular": tabular_calib is not None,
+                    "timeseries": timeseries_calib is not None,
+                    "image": image_calib is not None,
+                    "video": video_calib is not None,
                 },
                 "results": results,
                 "fusion": fused,
                 "image_compare": image_compare_out,
                 "video_compare": video_compare_out,
                 "image_model_loaded": image_model is not None,
-                "image_calibration_loaded": image_calib is not None,
             }
             st.code(json.dumps(payload, indent=2, default=str), language="json")
 

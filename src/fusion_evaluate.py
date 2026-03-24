@@ -46,13 +46,84 @@ def fuse_weighted_average(
     strong_threshold_video: float = 0.95,
     fused_threshold: float = 0.65,
     vote_k: int = 2,
+    strong_thresholds: dict | None = None,
 ) -> dict:
-    """
-    Minimal fusion that accepts any subset of modalities.
-    results: { "tabular": {...}, "timeseries": {...}, "image": {...}, "video": {...} }
-    each modality dict must contain: score_norm, label
-    """
+    
 
+# Build per-modality strong-threshold map
+    if strong_thresholds is None:
+        strong_thresholds = {}
+
+    modality_thresholds = {
+        "tabular": float(strong_thresholds.get("tabular", strong_threshold)),
+        "timeseries": float(strong_thresholds.get("timeseries", strong_threshold)),
+        "image": float(strong_thresholds.get("image", strong_threshold)),
+        "video": float(strong_thresholds.get("video", strong_threshold_video)),
+    }
+
+    # Strong-modality override
+    strong_hits = []
+    for m, r in results.items():
+        s = float(r["score_norm"])
+        thr = float(modality_thresholds.get(m, strong_threshold))
+        if s >= thr:
+            strong_hits.append((m, s, thr))
+
+    if strong_hits:
+        strong_hits.sort(key=lambda x: x[1], reverse=True)
+        top_m, top_s, top_thr = strong_hits[0]
+        return {
+            "final_score": float(top_s),
+            "final_label": 1,
+            "reason": f"strong modality '{top_m}' score={top_s:.4f} >= {top_thr:.2f}",
+            "by_modality": {
+                m: {
+                    "score": float(r["score_norm"]),
+                    "label": int(r["label"]),
+                    "method": r.get("method", ""),
+                    "meta": r.get("meta", {}),
+                    "strong_threshold": float(modality_thresholds.get(m, strong_threshold)),
+                }
+                for m, r in results.items()
+            },
+        }
+
+    # Weighted average score
+    num, den = 0.0, 0.0
+    for m, r in results.items():
+        w = float(weights.get(m, 1.0))
+        s = float(r["score_norm"])
+        num += w * s
+        den += w
+
+    fused_score = num / den if den > 0 else 0.0
+    fused_score = float(np.clip(fused_score, 0.0, 1.0))
+
+    # Vote + score threshold
+    votes = sum(1 for r in results.values() if int(r["label"]) == 1)
+    vote_label = 1 if votes >= vote_k else 0
+    score_label = 1 if fused_score >= fused_threshold else 0
+    final_label = 1 if (vote_label == 1 or score_label == 1) else 0
+
+    return {
+        "final_score": fused_score,
+        "final_label": final_label,
+        "reason": (
+            f"fused_score={fused_score:.4f} (thr={fused_threshold:.2f}) -> {score_label} | "
+            f"votes={votes} (k={vote_k}) -> {vote_label}"
+        ),
+        "by_modality": {
+            m: {
+                "score": float(r["score_norm"]),
+                "label": int(r["label"]),
+                "method": r.get("method", ""),
+                "meta": r.get("meta", {}),
+                "strong_threshold": float(modality_thresholds.get(m, strong_threshold)),
+            }
+            for m, r in results.items()
+        },
+    }
+    
     # Strong-modality override (video uses higher threshold)
     strong_hits = []
     for m, r in results.items():
@@ -123,10 +194,10 @@ def run_case(name: str, tabular_data, ts_data, image_path: str, video_cfg: dict,
 
     # --- Image ---
     img = load_image(image_path)
-    # If you have a trained AE model, pass it here; otherwise None uses heuristic.
+    # If I have a trained AE model, otherwise None uses heuristic.
     img_result = detect_image_for_fusion(model=None, image=img)
 
-    # --- Video (Option A: p95 over frames in ONE clip) ---
+    # --- Video (p95 over frames in ONE clip) ---
     clip_dir = pick_first_ucsd_clip(video_cfg)
     vid_result = detect_video_clip_for_fusion(clip_dir, threshold=0.90)
 
