@@ -164,75 +164,104 @@ def summarize_video(results: List[Any], score_mode: str = "p95") -> ModalitySumm
 # ----------------------------
 
 def fuse_weighted_average(
-    summaries: List[ModalitySummary],
-    weights: Optional[Dict[str, float]] = None,
-    strong_threshold: float = 0.8,
-    avg_threshold: float = 0.6,
-) -> Dict[str, Any]:
+    results: dict,
+    weights: dict,
+    strong_threshold: float = 0.80,
+    strong_threshold_video: float = 0.95,
+    fused_threshold: float = 0.65,
+    vote_k: int = 2,
+    strong_thresholds: dict | None = None,
+) -> dict:
     """
-    Weighted average fusion over modality scores in [0,1].
+    Fusion for any subset of modalities.
 
-    Decision rule:
-      - If any modality score >= strong_threshold => ANOMALY
-      - Else if weighted average >= avg_threshold => ANOMALY
-      - Else NORMAL
-
-    Returns:
-      final_score, final_label, reason, by_modality
-    """
-    if not summaries:
-        return {
-            "final_score": 0.0,
-            "final_label": 1,
-            "reason": "no modalities",
-            "by_modality": []
+    results:
+        {
+            "tabular": {...},
+            "timeseries": {...},
+            "image": {...},
+            "video": {...}
         }
 
-    if weights is None:
-        weights = {}
+    Each modality dict must contain:
+    - score_norm
+    - label
 
-    ws: List[float] = []
-    xs: List[float] = []
-    names: List[str] = []
+    Supports:
+    - weighted fusion
+    - vote-aware decision
+    - strong-modality override
+    - optional per-modality strong thresholds
+    """
+    if strong_thresholds is None:
+        strong_thresholds = {}
 
-    for s in summaries:
-        names.append(s.modality)
-        ws.append(float(weights.get(s.modality, 1.0)))
-        xs.append(float(s.score))
+    modality_thresholds = {
+        "tabular": float(strong_thresholds.get("tabular", strong_threshold)),
+        "timeseries": float(strong_thresholds.get("timeseries", strong_threshold)),
+        "image": float(strong_thresholds.get("image", strong_threshold)),
+        "video": float(strong_thresholds.get("video", strong_threshold_video)),
+    }
 
-    ws_arr = np.asarray(ws, dtype=np.float32)
-    xs_arr = np.asarray(xs, dtype=np.float32)
+    # Strong-modality override
+    strong_hits = []
+    for m, r in results.items():
+        s = float(r["score_norm"])
+        thr = float(modality_thresholds.get(m, strong_threshold))
+        if s >= thr:
+            strong_hits.append((m, s, thr))
 
-    denom = float(ws_arr.sum()) if float(ws_arr.sum()) > 1e-8 else 1.0
-    final_score = float((ws_arr * xs_arr).sum() / denom)
+    if strong_hits:
+        strong_hits.sort(key=lambda x: x[1], reverse=True)
+        top_m, top_s, top_thr = strong_hits[0]
+        return {
+            "final_score": float(top_s),
+            "final_label": 1,
+            "reason": f"strong modality '{top_m}' score={top_s:.4f} >= {top_thr:.2f}",
+            "by_modality": {
+                m: {
+                    "score": float(r["score_norm"]),
+                    "label": int(r["label"]),
+                    "method": r.get("method", ""),
+                    "meta": r.get("meta", {}),
+                    "strong_threshold": float(modality_thresholds.get(m, strong_threshold)),
+                }
+                for m, r in results.items()
+            },
+        }
 
-    # Strong-modality rule (explainable)
-    strong_idxs = np.where(xs_arr >= strong_threshold)[0]
-    if strong_idxs.size > 0:
-        best_i = int(strong_idxs[np.argmax(xs_arr[strong_idxs])])
-        best_name = names[best_i]
-        best_score = float(xs_arr[best_i])
-        final_label = -1
-        reason = f"strong modality '{best_name}' score={best_score:.4f} >= {strong_threshold}"
-    else:
-        if final_score >= avg_threshold:
-            final_label = -1
-            reason = f"weighted average score={final_score:.4f} >= {avg_threshold}"
-        else:
-            final_label = 1
-            reason = f"no strong modality and weighted average score={final_score:.4f} < {avg_threshold}"
+    # Weighted average
+    num, den = 0.0, 0.0
+    for m, r in results.items():
+        w = float(weights.get(m, 1.0))
+        s = float(r["score_norm"])
+        num += w * s
+        den += w
+
+    fused_score = num / den if den > 0 else 0.0
+    fused_score = float(np.clip(fused_score, 0.0, 1.0))
+
+    # Vote + score threshold
+    votes = sum(1 for r in results.values() if int(r["label"]) == 1)
+    vote_label = 1 if votes >= vote_k else 0
+    score_label = 1 if fused_score >= fused_threshold else 0
+    final_label = 1 if (vote_label == 1 or score_label == 1) else 0
 
     return {
-        "final_score": final_score,
+        "final_score": fused_score,
         "final_label": final_label,
-        "reason": reason,
-        "by_modality": [
-            {
-                "modality": s.modality,
-                "score": s.score,
-                "label": s.label,
-                "meta": s.meta
+        "reason": (
+            f"fused_score={fused_score:.4f} (thr={fused_threshold:.2f}) -> {score_label} | "
+            f"votes={votes} (k={vote_k}) -> {vote_label}"
+        ),
+        "by_modality": {
+            m: {
+                "score": float(r["score_norm"]),
+                "label": int(r["label"]),
+                "method": r.get("method", ""),
+                "meta": r.get("meta", {}),
+                "strong_threshold": float(modality_thresholds.get(m, strong_threshold)),
             }
-            for s in summaries
-        ],
+            for m, r in results.items()
+        },
     }

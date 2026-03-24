@@ -159,8 +159,26 @@ Multimodial Anomaly Detection System/
 ├── outputs/
 ├── reports/
 ├── scripts/
-│   └── run_calibration.py
+│   ├── run_calibration.py
+│   └── run_multimodial.py
 ├── src/
+    ├──common/
+        ├── normalise.py
+│   ├── anomaly_router.py
+│   ├── detection_image.py
+│   ├── detection_tabular.py
+│   ├── detection_tabular_mixed.py
+│   ├── detection_tabular_single_table.py
+│   ├── detection_timeseries.py
+│   ├── detection_video.py
+│   ├── fusion.py
+│   ├── fusion_evaluate.py
+    ├── detection_video_compare.py
+│   ├── detection_image.compare.py
+│   ├── plot_video_scores.py
+│   ├── plot_video_segments.py
+│   └── video_postprocess.py
+│   └── run_multimodal.py
 ├── tests/
 ├── run_tests.py
 ├── train_image_autoencoder.py

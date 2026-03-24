@@ -18,7 +18,9 @@ def _ensure_dataframe(data) -> pd.DataFrame:
     elif isinstance(data, list):
         df = pd.DataFrame(data)
     else:
-        raise ValueError("Mixed tabular input must be a pandas DataFrame, dict, or list of dicts.")
+        raise ValueError(
+            "Mixed tabular input must be a pandas DataFrame, dict, or list of dicts."
+        )
 
     if df.empty:
         raise ValueError("Input data is empty.")
@@ -46,7 +48,9 @@ def _build_preprocessor(numeric_cols, categorical_cols):
         transformers.append(("num", StandardScaler(), numeric_cols))
 
     if categorical_cols:
-        transformers.append(("cat", OneHotEncoder(handle_unknown="ignore"), categorical_cols))
+        transformers.append(
+            ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_cols)
+        )
 
     if not transformers:
         raise ValueError("No usable columns found for preprocessing.")
@@ -57,7 +61,7 @@ def _build_preprocessor(numeric_cols, categorical_cols):
 def fit_mixed_tabular_model(
     train_data,
     contamination: float = 0.05,
-    random_state: int = 42
+    random_state: int = 42,
 ) -> Pipeline:
     df = _ensure_dataframe(train_data)
 
@@ -66,23 +70,58 @@ def fit_mixed_tabular_model(
 
     pipeline = Pipeline([
         ("preprocessor", preprocessor),
-        ("detector", IsolationForest(contamination=contamination, random_state=random_state)),
+        ("detector", IsolationForest(
+            contamination=contamination,
+            random_state=random_state,
+        )),
     ])
 
     pipeline.fit(df)
     return pipeline
 
 
-def detect_mixed_tabular_for_fusion(
-    model_pipeline: Pipeline,
+def detect_mixed_tabular_anomalies(
     data,
+    contamination: float = 0.05,
+    random_state: int = 42,
+) -> dict:
+    df = _ensure_dataframe(data)
+
+    model_pipeline = fit_mixed_tabular_model(
+        train_data=df,
+        contamination=contamination,
+        random_state=random_state,
+    )
+
+    labels = model_pipeline.predict(df)         # -1 anomaly, 1 normal
+    scores = -model_pipeline.score_samples(df)  # higher = more anomalous
+
+    return {
+        "labels": labels.tolist(),
+        "scores": scores.tolist(),
+        "n_anomalies": int((labels == -1).sum()),
+        "method": "IsolationForestMixed",
+        "columns": df.columns.tolist(),
+    }
+
+
+def detect_mixed_tabular_for_fusion(
+    data,
+    contamination: float = 0.05,
+    random_state: int = 42,
     threshold: float = 0.65,
     calib: dict | None = None,
 ) -> dict:
     df = _ensure_dataframe(data)
 
-    labels = model_pipeline.predict(df)           # -1 anomaly, 1 normal
-    scores = -model_pipeline.score_samples(df)    # higher = more anomalous
+    out = detect_mixed_tabular_anomalies(
+        data=df,
+        contamination=contamination,
+        random_state=random_state,
+    )
+
+    scores = np.asarray(out.get("scores", []), dtype=float)
+    labels = np.asarray(out.get("labels", []), dtype=int)
 
     score_raw = float(np.percentile(scores, 95)) if scores.size else 0.0
 
@@ -91,14 +130,14 @@ def detect_mixed_tabular_for_fusion(
             normalise_percentile(
                 score_raw,
                 float(calib["p10"]),
-                float(calib["p90"])
+                float(calib["p90"]),
             )
         )
     else:
         score_norm = float(1.0 - np.exp(-score_raw))
         score_norm = float(np.clip(score_norm, 0.0, 1.0))
 
-    label = 1 if score_norm >= threshold else 0
+    label = int(score_norm >= threshold)
     n_anom = int((labels == -1).sum()) if labels.size else 0
 
     return {
@@ -111,8 +150,9 @@ def detect_mixed_tabular_for_fusion(
             "n_samples": int(len(df)),
             "n_features": int(df.shape[1]),
             "n_anomalies": n_anom,
+            "contamination": contamination,
             "threshold": threshold,
-            "scores_preview": scores.tolist()[:50],
+            "scores_preview": out.get("scores", [])[:50],
             "columns": df.columns.tolist(),
             "calib_used": bool(calib is not None),
         },
