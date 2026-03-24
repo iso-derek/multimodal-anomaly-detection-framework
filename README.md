@@ -2,7 +2,7 @@
 
 This repository contains my Final Year Project (FYP): a modular **multimodal anomaly detection system** that combines evidence from **tabular data, time-series data, images, and video** into one interpretable anomaly decision.
 
-The project was developed as both a working software system and an academic investigation into how heterogeneous anomaly signals can be made comparable through **score normalisation** and combined through **decision-level fusion**.
+The project was developed as both a working software system and an academic investigation into how heterogeneous anomaly signals can be made comparable through **score normalisation, calibration, and decision-level fusion**.
 
 ## Overview
 
@@ -10,7 +10,7 @@ The system works by:
 
 - processing each available modality with a dedicated detector
 - producing a raw anomaly score for that modality
-- converting scores into a shared normalised range
+- converting scores into a shared normalised or calibrated range
 - combining the available modality scores through fusion
 - returning a final label, fused score, and explanation
 
@@ -18,115 +18,122 @@ Only the modalities provided by the user are analysed in each run.
 
 ## Architecture and Workflow
 
-![alt text](image-3.png)
-![alt text](image.png)
+![System architecture](image-3.png)  
+![Workflow overview](image.png)
 
 ## Current Capabilities
 
 ### Tabular
 - Isolation Forest for numeric tabular anomaly detection
 - float support for numeric input
-- mixed tabular CSV mode for numeric + categorical data
-- single-table row anomaly detection for identifying abnormal rows within one uploaded table
-- support for both small manual examples and uploaded CSV-based workflows
-- tabular outputs summarised into fusion-ready anomaly scores
+- mixed tabular CSV mode for numeric and categorical data
+- single-table row anomaly detection
+- support for both manual examples and uploaded CSV workflows
+- fusion-ready anomaly scoring
+- calibration support via `models/tabular_calibration.json`
 
 ### Time-Series
 - rolling z-score anomaly detection
-- short-window spike detection for sequential anomalies
-- support for quick manual sequence entry through the dashboard
-- fusion-ready scoring using the strongest sequential anomaly signal
+- short-window spike detection
+- manual sequence input via dashboard
+- fusion-ready scoring using strongest anomaly signal
+- calibration support via `models/timeseries_calibration.json`
 
 ### Image
-- trained autoencoder support using reconstruction error
-- separate image training workflow through `train_image_autoencoder.py`
-- automatic loading of the trained image model from `models/autoencoder.keras` when available
-- automatic loading of calibration values from `models/autoencoder_calibration.json` when available
-- lightweight statistical fallback for robust operation when a trained model is not available
-- uploaded-image analysis in the dashboard
-- single-image anomaly detection mode
-- multiple-image comparison mode for comparing uploaded images against each other
-- group-based image comparison using centroid-distance scoring to identify the most abnormal image within a provided set
+- autoencoder-based anomaly detection (reconstruction error)
+- training via `train_image_autoencoder.py`
+- automatic model loading from `models/autoencoder.keras`
+- autoencoder calibration support
+- additional calibration via `models/image_calibration.json`
+- fallback statistical scoring when model unavailable
+- single-image detection
+- multi-image comparison
+- group-based anomaly detection via centroid distance
 
 ### Video
-- frame-difference based video anomaly scoring
-- UCSD clip path input for video analysis
-- clip-level scoring using a robust high-percentile summary
-- single-video anomaly detection mode
-- multiple-video comparison mode for comparing several clips against each other
-- group-based video comparison using centroid-distance style summary scoring to identify the most abnormal clip within a provided set
+- frame-difference anomaly detection
+- UCSD dataset support
+- clip-level scoring using robust percentile summary
+- single-video detection
+- multi-video comparison
+- group-based anomaly detection
+- calibration support via `models/video_calibration.json`
+
+## Calibration and Score Comparability
+
+Different modalities produce scores on different scales. To address this, the system includes **modality-specific calibration**.
+
+Calibration improves:
+- score comparability
+- fusion stability
+- interpretability
+
+Calibration files:
+- `models/image_calibration.json`
+- `models/tabular_calibration.json`
+- `models/timeseries_calibration.json`
+- `models/video_calibration.json`
+- `models/autoencoder_calibration.json`
+
+Run calibration:
+```bash
+python scripts/run_calibration.py
+```
 
 ## Fusion
 
-The fusion stage combines available modality outputs using:
+Fusion combines modality outputs using:
 
-- weighted average scoring
-- vote-based decision logic
+- weighted average
+- vote-based logic
 - strong-modality override
-- support for missing modalities
+- missing modality handling
 
-The dashboard allows users to adjust **weights and thresholds** interactively. The default values are **research-informed baseline settings** used for controlled testing and interpretation.
-
-The fusion process is designed to remain interpretable by exposing:
-
-- per-modality raw scores
-- per-modality normalised scores
-- per-modality labels
-- final fused score
-- plain-language explanation of the final decision
+The system exposes:
+- raw scores
+- calibrated scores
+- labels
+- fused score
+- explanation
 
 ## Dashboard
 
 The Streamlit dashboard supports:
 
-- numeric tabular input
-- mixed tabular CSV input
-- single-table tabular anomaly detection
-- optional time-series input
-- optional image upload
-- optional video input
-- automatic use of the trained image autoencoder when it is present in the models folder
-- automatic fallback to lightweight image scoring when no trained image model is available
-- single-image anomaly detection
-- multiple-image comparison
-- single-video anomaly detection
-- multiple-video comparison
-- adjustable fusion weights and thresholds
-- adjustable image decision threshold
-- adjustable comparison thresholds for image and video comparison modes
-- per-modality result tables
-- ranked comparison outputs for image and video set analysis
-- fused decision explanation
-- modality-specific interpretation cards
-- technical JSON output
-- demo-ready default inputs for selected modes to support inspection and presentation
+- tabular (numeric, mixed, single-table)
+- time-series input
+- image upload and comparison
+- video input and comparison
+- automatic model loading
+- fallback behaviour
+- adjustable weights and thresholds
+- per-modality outputs
+- ranked comparison results
+- JSON outputs
+- explanation interface
 
-The dashboard is designed to make the system inspectable and explainable rather than acting as a black-box predictor.
+Run dashboard:
+```bash
+streamlit run dashboard/app.py
+```
 
 ## Development Summary
 
-The project developed in three broad phases:
-
-### Phase 1 — Research and exploratory prototyping
+### Phase 1 — Research
 - literature review
-- anomaly detection and multimodal fusion research
-- notebook-based experimentation in Jupyter
-- early testing of tabular, time-series, image, and video ideas
+- multimodal anomaly detection study
+- Jupyter experimentation
 
-### Phase 2 — Structured implementation
-- refactoring notebook logic into Python modules
-- building modality-specific detectors
-- implementing score handling and fusion
-- moving the main implementation into a modular VS Code workflow
+### Phase 2 — Implementation
+- modular Python system
+- detector development
+- fusion and calibration integration
 
-### Phase 3 — Validation and dashboard refinement
-- testing the detectors and fusion pipeline
-- generating result outputs
-- building and refining the Streamlit dashboard
-- improving flexible modality handling and tabular functionality
-- extending the system to support image-set and video-set comparison workflows
-- integrating trained-model image inference with automatic fallback behaviour
-- polishing evaluation, interface behaviour, and final outputs
+### Phase 3 — Validation
+- testing and evaluation
+- dashboard development
+- comparison features
+- system refinement
 
 ## Repository Structure
 
@@ -135,49 +142,39 @@ Multimodial Anomaly Detection System/
 ├── dashboard/
 │   └── app.py
 ├── data/
+│   ├── image_train/
+│   └── ucsd/
 ├── images/
+│   ├── reference_normal/
+│   ├── abnormal_arm.jpg
+│   └── normal_arm.jpg
 ├── models/
 │   ├── autoencoder.keras
-│   └── autoencoder_calibration.json
+│   ├── autoencoder_calibration.json
+│   ├── image_calibration.json
+│   ├── tabular_calibration.json
+│   ├── timeseries_calibration.json
+│   └── video_calibration.json
 ├── notebooks/
 ├── outputs/
 ├── reports/
+├── scripts/
+│   └── run_calibration.py
 ├── src/
-│   ├── common/
-│   ├── anomaly_router.py
-│   ├── detection_image.py
-│   ├── detection_image_compare.py
-│   ├── detection_tabular.py
-│   ├── detection_tabular_mixed.py
-│   ├── detection_tabular_single_table.py
-│   ├── detection_timeseries.py
-│   ├── detection_video.py
-│   ├── detection_video_compare.py
-│   ├── fusion.py
-│   ├── fusion_evaluate.py
-│   └── run_multimodal.py
 ├── tests/
+├── run_tests.py
 ├── train_image_autoencoder.py
 ├── README.md
-└── run_tests.py
 ```
 
 ## Running the Project
 
-Run the dashboard:
-
-```bash
-streamlit run dashboard/app.py
-```
-
-Run the tests:
-
+Run tests:
 ```bash
 python run_tests.py
 ```
 
-Train or retrain the image autoencoder:
-
+Train image model:
 ```bash
 python train_image_autoencoder.py
 ```
@@ -185,23 +182,21 @@ python train_image_autoencoder.py
 ## Key Strengths
 
 - modular architecture
-- interpretable anomaly outputs
-- multimodal fusion across four data types
-- support for missing modalities
-- layered image detection design with training + fallback support
-- automatic trained-model loading for the image branch
-- interactive dashboard for demonstration and analysis
-- extended tabular functionality beyond basic numeric input
-- support for both direct anomaly detection and within-set comparison workflows
-- practical balance between research structure, implementation clarity, and explainability
+- interpretable outputs
+- multimodal fusion
+- calibration support
+- comparison modes
+- interactive dashboard
+- flexible tabular workflows
+- practical and explainable design
 
 ## Current Limitations
 
-- some detectors are intentionally lightweight baselines
-- fusion still depends on manually chosen baseline weights and thresholds
-- evaluation can be expanded further with larger benchmark studies
-- the image and video branches are practical, integrated implementations rather than specialist large-scale domain models
-- comparison modes identify relative outliers within the provided set, so their interpretation depends on the quality and representativeness of the uploaded examples
+- baseline detectors
+- manual fusion tuning
+- limited benchmarking
+- non-specialised image/video models
+- comparison depends on input quality
 
 ## Author
 
@@ -210,6 +205,6 @@ University of Birmingham
 
 ## Final Note
 
-This repository presents a research-driven multimodal anomaly detection framework that combines classical machine learning, statistical methods, computer vision, and decision-level fusion in one system.
+This project delivers a **complete, interpretable, and extensible multimodal anomaly detection system** combining machine learning, statistical methods, calibration, and fusion.
 
-Its main contribution is not a claim of state-of-the-art performance in every individual branch, but the design and implementation of a **complete, interpretable, extensible, and defensible multimodal anomaly detection system** that supports both single-input anomaly detection and comparison-based anomaly analysis across multiple modalities.
+Its strength lies in system design, explainability, and practical integration across multiple data modalities.

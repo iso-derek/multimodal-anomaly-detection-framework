@@ -16,7 +16,7 @@ from src.detection_video import detect_video_clip_for_fusion
 def load_image(path: str) -> np.ndarray:
     """
     Loads image as numpy array.
-    - If your image AE is RGB, DO NOT convert to grayscale here.
+    - If your image AE is RGB, do not convert to grayscale here.
     - X-ray images are typically already grayscale anyway.
     """
     img = imread(path)
@@ -32,7 +32,9 @@ def pick_first_ucsd_clip(video_cfg: dict) -> Path:
     if not base.exists():
         raise FileNotFoundError(f"UCSD split folder not found: {base}")
 
-    clip_dirs = sorted([p for p in base.iterdir() if p.is_dir() and not p.name.lower().endswith("_gt")])
+    clip_dirs = sorted(
+        [p for p in base.iterdir() if p.is_dir() and not p.name.lower().endswith("_gt")]
+    )
     if not clip_dirs:
         raise RuntimeError(f"No UCSD clip folders found in: {base}")
 
@@ -48,9 +50,27 @@ def fuse_weighted_average(
     vote_k: int = 2,
     strong_thresholds: dict | None = None,
 ) -> dict:
-    
+    """
+    Minimal fusion that accepts any subset of modalities.
 
-# Build per-modality strong-threshold map
+    results:
+        {
+            "tabular": {...},
+            "timeseries": {...},
+            "image": {...},
+            "video": {...}
+        }
+
+    Each modality dict must contain:
+    - score_norm
+    - label
+
+    Supports:
+    - weighted fusion
+    - vote-aware decision
+    - strong-modality override
+    - optional per-modality strong thresholds
+    """
     if strong_thresholds is None:
         strong_thresholds = {}
 
@@ -123,81 +143,20 @@ def fuse_weighted_average(
             for m, r in results.items()
         },
     }
-    
-    # Strong-modality override (video uses higher threshold)
-    strong_hits = []
-    for m, r in results.items():
-        s = float(r["score_norm"])
-        thr = strong_threshold_video if m == "video" else strong_threshold
-        if s >= thr:
-            strong_hits.append((m, s, thr))
-
-    if strong_hits:
-        strong_hits.sort(key=lambda x: x[1], reverse=True)
-        top_m, top_s, top_thr = strong_hits[0]
-        return {
-            "final_score": top_s,
-            "final_label": 1,
-            "reason": f"strong modality '{top_m}' score={top_s:.4f} >= {top_thr}",
-            "by_modality": {
-                m: {
-                    "score": float(r["score_norm"]),
-                    "label": int(r["label"]),
-                    "method": r.get("method", ""),
-                    "meta": r.get("meta", {}),
-                }
-                for m, r in results.items()
-            },
-        }
-
-    # Weighted average score
-    num, den = 0.0, 0.0
-    for m, r in results.items():
-        w = float(weights.get(m, 1.0))
-        s = float(r["score_norm"])
-        num += w * s
-        den += w
-    fused_score = num / den if den > 0 else 0.0
-    fused_score = float(np.clip(fused_score, 0.0, 1.0))
-
-    # Vote + score threshold
-    votes = sum(1 for r in results.values() if int(r["label"]) == 1)
-    vote_label = 1 if votes >= vote_k else 0
-    score_label = 1 if fused_score >= fused_threshold else 0
-    final_label = 1 if (vote_label == 1 or score_label == 1) else 0
-
-    return {
-        "final_score": fused_score,
-        "final_label": final_label,
-        "reason": (
-            f"fused_score={fused_score:.4f} (thr={fused_threshold}) -> {score_label} | "
-            f"votes={votes} (k={vote_k}) -> {vote_label}"
-        ),
-        "by_modality": {
-            m: {
-                "score": float(r["score_norm"]),
-                "label": int(r["label"]),
-                "method": r.get("method", ""),
-                "meta": r.get("meta", {}),
-            }
-            for m, r in results.items()
-        },
-    }
 
 
 def run_case(name: str, tabular_data, ts_data, image_path: str, video_cfg: dict, weights: dict) -> dict:
-    # --- Tabular ---
+    # Tabular
     tab_result = detect_tabular_for_fusion(np.asarray(tabular_data))
 
-    # --- Time-series (short demo series -> small window) ---
+    # Time-series
     ts_result = detect_timeseries_for_fusion(np.asarray(ts_data), window=3)
 
-    # --- Image ---
+    # Image
     img = load_image(image_path)
-    # If I have a trained AE model, otherwise None uses heuristic.
     img_result = detect_image_for_fusion(model=None, image=img)
 
-    # --- Video (p95 over frames in ONE clip) ---
+    # Video
     clip_dir = pick_first_ucsd_clip(video_cfg)
     vid_result = detect_video_clip_for_fusion(clip_dir, threshold=0.90)
 
@@ -233,10 +192,17 @@ def run_suite(image_path: str, out_path: Path) -> None:
         "image": 0.8,
     }
 
-    video_ped1_test = {"root": "data/ucsd/UCSD_Anomaly_Dataset.v1p2", "dataset": "UCSDped1", "split": "Test"}
-    video_ped1_train = {"root": "data/ucsd/UCSD_Anomaly_Dataset.v1p2", "dataset": "UCSDped1", "split": "Train"}
+    video_ped1_test = {
+        "root": "data/ucsd/UCSD_Anomaly_Dataset.v1p2",
+        "dataset": "UCSDped1",
+        "split": "Test",
+    }
+    video_ped1_train = {
+        "root": "data/ucsd/UCSD_Anomaly_Dataset.v1p2",
+        "dataset": "UCSDped1",
+        "split": "Train",
+    }
 
-    # Demo signals
     ts_data_anom = [0.0, 0.0, 0.1, 2.0, 0.1, 0.0, 0.1]
     ts_data_normal = [0.1, 0.1, 0.11, 0.1, 0.09, 0.1, 0.1]
 
@@ -279,7 +245,6 @@ def run_suite(image_path: str, out_path: Path) -> None:
 
 
 def main():
-    #  Evidence outputs for BOTH images
     run_suite(
         image_path="images/normal_arm.jpg",
         out_path=Path("outputs/fusion_summary_normal_arm.json"),
