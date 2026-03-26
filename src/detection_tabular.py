@@ -8,7 +8,7 @@ from src.common.normalise import normalise_percentile
 def detect_tabular_anomalies(
     data: np.ndarray,
     contamination: float = 0.05,
-    random_state: int = 42,
+    random_state: int = 42,  
 ):
     data = np.asarray(data, dtype=float)
 

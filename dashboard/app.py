@@ -20,6 +20,7 @@ from src.detection_tabular import detect_tabular_for_fusion
 from src.detection_tabular_mixed import (
     fit_mixed_tabular_model,
     detect_mixed_tabular_for_fusion,
+    detect_mixed_tabular_anomalies,
 )
 from src.detection_tabular_single_table import detect_single_table_tabular_for_fusion
 from src.detection_timeseries import detect_timeseries_for_fusion
@@ -379,27 +380,21 @@ with col1:
         )
 
         if tabular_mode == "Numeric Tabular":
-            st.caption("Demo example is pre-filled. You can edit or remove it.")
+            st.caption("Upload or enter numeric tabular data. Each row is a data point, columns are features. Comma-separated values.")
             tabular_text = st.text_area(
                 "Enter numeric tabular values",
                 value=DEMO_TABULAR_TEXT,
                 height=120,
             )
-            mixed_train_csv = None
-            mixed_test_csv = None
+            mixed_csv = None
             single_table_csv = None
 
         elif tabular_mode == "Mixed Tabular CSV":
-            st.caption("Upload a reference/training CSV and a test CSV with the same columns.")
-            mixed_train_csv = st.file_uploader(
-                "Upload mixed tabular training/reference CSV",
+            st.caption("Upload one mixed tabular CSV file.")
+            mixed_csv = st.file_uploader(
+                "Upload mixed tabular CSV",
                 type=["csv"],
-                key="mixed_train_csv",
-            )
-            mixed_test_csv = st.file_uploader(
-                "Upload mixed tabular test CSV",
-                type=["csv"],
-                key="mixed_test_csv",
+                key="mixed_csv",
             )
             single_table_csv = None
             tabular_text = ""
@@ -411,23 +406,21 @@ with col1:
                 type=["csv"],
                 key="single_table_csv",
             )
-            mixed_train_csv = None
-            mixed_test_csv = None
+            mixed_csv = None
             tabular_text = ""
     else:
         tabular_mode = None
         tabular_text = ""
-        mixed_train_csv = None
-        mixed_test_csv = None
+        mixed_csv = None
         single_table_csv = None
 
     st.markdown("#### Time-Series Input")
     use_timeseries = st.checkbox("Use time-series modality", value=True)
     if use_timeseries:
-        st.caption("Demo example is pre-filled. You can edit or remove it.")
+        st.caption("Enter comma-separated values for the time-series input.")
         ts_text = st.text_input(
             "Enter time-series values (comma-separated)",
-            value=DEMO_TS_TEXT,
+            value="",
         )
     else:
         ts_text = ""
@@ -524,8 +517,8 @@ if st.button("Run Multimodal Detection", type="primary"):
     try:
         results = {}
         tabular_input_summary = "Not used"
-        mixed_train_preview = None
-        mixed_test_preview = None
+        mixed_preview = None
+        mixed_ranked_rows = None
         single_table_preview = None
         image_source = "Not used"
         video_source = "Not used"
@@ -548,27 +541,35 @@ if st.button("Run Multimodal Detection", type="primary"):
                 tabular_input_summary = tabular_text
 
             elif tabular_mode == "Mixed Tabular CSV":
-                if mixed_train_csv is None:
-                    raise ValueError("Please upload a mixed tabular training/reference CSV.")
-                if mixed_test_csv is None:
-                    raise ValueError("Please upload a mixed tabular test CSV.")
+                if mixed_csv is None:
+                    raise ValueError("Please upload a mixed tabular CSV.")
 
-                train_df = pd.read_csv(mixed_train_csv)
-                test_df = pd.read_csv(mixed_test_csv)
+                mixed_df = pd.read_csv(mixed_csv)
 
-                model = fit_mixed_tabular_model(train_df)
                 tab_result = call_with_supported_kwargs(
                     detect_mixed_tabular_for_fusion,
-                    model,
-                    test_df,
+                    mixed_df,
                     threshold=tabular_threshold,
                     calib=tabular_calib,
                 )
                 results["tabular"] = tab_result
 
+                row_out = detect_mixed_tabular_anomalies(mixed_df)
+
+                ranked_df = mixed_df.copy()
+                ranked_df["anomaly_score"] = row_out["scores"]
+                ranked_df["row_label"] = [
+                    "ANOMALY" if int(x) == -1 else "NORMAL"
+                    for x in row_out["labels"]
+                ]
+                ranked_df = ranked_df.sort_values(by="anomaly_score", ascending=False).reset_index(drop=True)
+                ranked_df.insert(0, "rank", np.arange(1, len(ranked_df) + 1))
+
+                results["tabular"]["meta"]["row_level_anomalies"] = int(row_out["n_anomalies"])
+
                 tabular_input_summary = "Mixed Tabular CSV upload"
-                mixed_train_preview = train_df
-                mixed_test_preview = test_df
+                mixed_preview = mixed_df
+                mixed_ranked_rows = ranked_df
 
             elif tabular_mode == "Single Table Row Anomaly Detection":
                 if single_table_csv is None:
@@ -720,18 +721,22 @@ if st.button("Run Multimodal Detection", type="primary"):
         modality_df = build_modality_table(results)
         st.dataframe(modality_df, use_container_width=True)
 
-        # Mixed CSV preview
-        if tabular_mode == "Mixed Tabular CSV" and mixed_train_preview is not None and mixed_test_preview is not None:
+        # Mixed CSV preview + ranking
+        if tabular_mode == "Mixed Tabular CSV" and mixed_preview is not None:
             st.subheader("6. Mixed Tabular CSV Preview")
-            left_csv, right_csv = st.columns(2)
+            st.dataframe(mixed_preview.head(), use_container_width=True)
 
-            with left_csv:
-                st.markdown("**Training / Reference CSV**")
-                st.dataframe(mixed_train_preview.head(), use_container_width=True)
+            if mixed_ranked_rows is not None:
+                st.subheader("6A. Ranked Mixed Tabular Rows")
+                st.write("Rows are ranked by anomaly score. Higher score means more anomalous.")
+                st.dataframe(mixed_ranked_rows, use_container_width=True)
 
-            with right_csv:
-                st.markdown("**Test CSV**")
-                st.dataframe(mixed_test_preview.head(), use_container_width=True)
+                anomalous_only = mixed_ranked_rows[mixed_ranked_rows["row_label"] == "ANOMALY"]
+                st.subheader("6B. Flagged Anomalous Rows")
+                if not anomalous_only.empty:
+                    st.dataframe(anomalous_only, use_container_width=True)
+                else:
+                    st.info("No rows were flagged as anomalous in this mixed tabular CSV.")
 
         # Single table preview
         if tabular_mode == "Single Table Row Anomaly Detection" and single_table_preview is not None:
