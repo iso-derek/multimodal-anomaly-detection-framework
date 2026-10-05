@@ -163,7 +163,7 @@ def summarize_video(results: List[Any], score_mode: str = "p95") -> ModalitySumm
 # Fusion strategy
 # ----------------------------
 
-def fuse_weighted_average(
+def _fuse_dictionary(
     results: dict,
     weights: dict,
     strong_threshold: float = 0.80,
@@ -265,3 +265,17 @@ def fuse_weighted_average(
             for m, r in results.items()
         },
     }
+
+def fuse_weighted_average(results, weights, strong_threshold=.8, strong_threshold_video=.95,
+                          fused_threshold=.65, vote_k=2, strong_thresholds=None, avg_threshold=None):
+    """Canonical dict API (1 anomaly); legacy summary-list API (-1 anomaly)."""
+    legacy=isinstance(results,list)
+    if legacy:
+        results={r.modality:{'score_norm':r.score,'label':int(r.label==-1),'meta':r.meta} for r in results}
+    threshold=fused_threshold if avg_threshold is None else avg_threshold
+    out=_fuse_dictionary(results,weights,strong_threshold,strong_threshold_video,threshold,vote_k,strong_thresholds)
+    if legacy:
+        out['final_label']=-1 if out['final_label']==1 else 1
+        if 'strong modality' not in out['reason']:
+            out['reason']='weighted average; no strong modality | '+out['reason']
+    return out
