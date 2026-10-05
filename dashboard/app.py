@@ -9,7 +9,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from skimage.io import imread
-from tensorflow.keras.models import load_model
 
 # Make project root importable
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,7 +27,8 @@ from src.detection_image import detect_image_for_fusion
 from src.detection_video import detect_video_clip_for_fusion
 from src.detection_image_compare import load_image_input, compare_image_set
 from src.detection_video_compare import compare_video_set
-from src.fusion_evaluate import fuse_weighted_average
+from src.fusion import fuse_weighted_average
+from src.reliability import fuse_reliability
 
 
 # ---------------- PAGE SETUP ----------------
@@ -223,6 +223,7 @@ def load_image_model():
     if not model_path.exists():
         return None
     try:
+        from tensorflow.keras.models import load_model
         return load_model(model_path)
     except Exception as e:
         st.warning(f"Could not load trained image model: {e}")
@@ -252,6 +253,13 @@ video_calib = load_calibration("video")
 
 
 # ---------------- SIDEBAR SETTINGS ----------------
+st.sidebar.caption("Run `streamlit run dashboard/research.py` for the aligned-event robustness study.")
+use_reliability = st.sidebar.checkbox("Use reliability-weighted fusion", value=True)
+quality = {}
+if use_reliability:
+    st.sidebar.caption("Quality is a user-supplied input-quality estimate, not a measured model accuracy.")
+    for modality in ["tabular", "timeseries", "image", "video"]:
+        quality[modality] = st.sidebar.slider(f"{modality.title()} reliability", 0.0, 1.0, 1.0, .05)
 st.sidebar.header("Fusion Weights")
 st.sidebar.caption("Higher weight means that modality has more influence on the final decision.")
 
@@ -665,20 +673,26 @@ if st.button("Run Multimodal Detection", type="primary"):
             raise ValueError("Please provide at least one modality before running detection.")
 
         # Fusion
-        fused = call_with_supported_kwargs(
-            fuse_weighted_average,
-            results=results,
-            weights=weights,
-            fused_threshold=fused_threshold,
-            vote_k=vote_k,
-            strong_thresholds=strong_thresholds,
-            strong_threshold=max(
-                strong_threshold_tabular,
-                strong_threshold_timeseries,
-                strong_threshold_image,
-            ),
-            strong_threshold_video=strong_threshold_video,
-        )
+        if use_reliability:
+            fused = fuse_reliability(results, weights, quality, fused_threshold)
+            if fused['final_label'] is None:
+                st.warning(fused['reason'])
+                st.stop()
+        else:
+            fused = call_with_supported_kwargs(
+                fuse_weighted_average,
+                results=results,
+                weights=weights,
+                fused_threshold=fused_threshold,
+                vote_k=vote_k,
+                strong_thresholds=strong_thresholds,
+                strong_threshold=max(
+                    strong_threshold_tabular,
+                    strong_threshold_timeseries,
+                    strong_threshold_image,
+                ),
+                strong_threshold_video=strong_threshold_video,
+            )
 
         # Final result
         st.subheader("3. Final Fusion Result")

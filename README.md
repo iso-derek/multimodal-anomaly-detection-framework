@@ -226,3 +226,18 @@ University of Birmingham
 This project delivers a **complete, interpretable, and extensible multimodal anomaly detection system** combining machine learning, statistical methods, calibration, and fusion.
 
 Its strength lies in system design, explainability, and practical integration across multiple data modalities.
+
+## Reliability-aware research extension
+
+```bash
+pip install -r requirements.txt
+streamlit run dashboard/research.py
+python scripts/run_research.py
+python run_tests.py
+```
+
+The research lab compares equal, learned fixed and quality-adaptive fusion on aligned event scores using separate calibration, validation and test groups. It includes missing-modality and noise stress tests, a quality-unknown ablation, abstention when evidence is unavailable, and downloadable reproducibility bundles. Upload your own aligned out-of-sample detector scores using the schema in the [protocol](docs/RESEARCH_PROTOCOL.md).
+
+The original `dashboard/app.py` now offers reliability weighting with explicit user-supplied quality sliders. Legacy strong-override fusion remains selectable. TensorFlow is loaded only when a trained image model is present; install `requirements-autoencoder.txt` for that optional path. The legacy summary-list fusion API retains its -1/1 labels, while the dictionary API uses 0/1.
+
+Read the [measured results and limitations](docs/RESEARCH_RESULTS.md): the default data are synthetic and quality adaptation depends on knowing which input is degraded. These measurements are not real-world multimodal detector validation.
