@@ -8,3 +8,5 @@ outputs/
 *.csv
 models/
 outputs/
+/.venv/
+/runs/

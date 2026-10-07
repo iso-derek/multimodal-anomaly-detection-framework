@@ -1,0 +1,7 @@
+{
+  "name": "Multimodal Anomaly Detection",
+  "app": "dashboard/app.py",
+  "research_app": "dashboard/research.py",
+  "port": 8505
+}
+
