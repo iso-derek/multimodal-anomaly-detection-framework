@@ -241,3 +241,6 @@ The research lab compares equal, learned fixed and quality-adaptive fusion on al
 The original `dashboard/app.py` now offers reliability weighting with explicit user-supplied quality sliders. Legacy strong-override fusion remains selectable. TensorFlow is loaded only when a trained image model is present; install `requirements-autoencoder.txt` for that optional path. The legacy summary-list fusion API retains its -1/1 labels, while the dictionary API uses 0/1.
 
 Read the [measured results and limitations](docs/RESEARCH_RESULTS.md): the default data are synthetic and quality adaptation depends on knowing which input is degraded. These measurements are not real-world multimodal detector validation.
+# One-command local launch
+
+On Windows with Python 3.13, double-click `Start.cmd`, or run `py -3.13 launch.py` in this folder. Use `py -3.13 launch.py --research-ui` for the fusion research lab. Python 3.12 is also supported. See [quick start and research history](docs/QUICKSTART.md).
